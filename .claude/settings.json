@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash scripts/crash-alert.sh",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

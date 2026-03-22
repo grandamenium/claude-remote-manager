@@ -1,0 +1,6 @@
+.env
+agents/*/.env
+agents/*/local/
+agents/*/telegram-images/
+*.log
+.DS_Store

@@ -1,0 +1,13 @@
+{
+  "agent_name": "agent-template",
+  "enabled": false,
+  "startup_delay": 0,
+  "max_session_seconds": 255600,
+  "crons": [
+    {
+      "name": "heartbeat",
+      "interval": "4h",
+      "prompt": "Update heartbeat, check inbox for messages, and report status."
+    }
+  ]
+}
