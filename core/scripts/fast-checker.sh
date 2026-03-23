@@ -378,7 +378,7 @@ Reply using: bash ../../core/bus/send-message.sh ${FROM} normal '<your reply>' $
     # --- Inject if anything found ---
     if [[ -n "$MESSAGE_BLOCK" ]]; then
         if inject_messages "$MESSAGE_BLOCK"; then
-            for ack_id in "${INBOX_MSG_IDS[@]}"; do
+            for ack_id in "${INBOX_MSG_IDS[@]+"${INBOX_MSG_IDS[@]}"}"; do
                 bash "${BUS_DIR}/ack-inbox.sh" "$ack_id" 2>/dev/null || true
             done
             # Cooldown after injection
