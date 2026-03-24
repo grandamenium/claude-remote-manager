@@ -110,11 +110,45 @@ if [[ -n "${WORK_DIR}" ]]; then
         exit 1
     fi
     LAUNCH_DIR="${WORK_DIR}"
-    # Inject agent identity into system prompt (since we're not in AGENT_DIR)
+    # Inject agent identity into system prompt (since we're not in AGENT_DIR).
+    # NOTE: Only CLAUDE.md is injected here. If the agent has additional bootstrap
+    # files (SOUL.md, GOALS.md, skills, etc.), CLAUDE.md should reference them using
+    # @import syntax (e.g., @SOUL.md, @GOALS.md) so they are loaded automatically.
+    # The --add-dir flag below gives Claude access to read these files from AGENT_DIR.
     EXTRA_FLAGS+=(--append-system-prompt-file "${AGENT_DIR}/CLAUDE.md")
-    # Inject agent hooks/permissions from central repo
-    if [[ -f "${AGENT_DIR}/.claude/settings.json" ]]; then
-        EXTRA_FLAGS+=(--settings "${AGENT_DIR}/.claude/settings.json")
+    # Merge settings: project settings as base, CRM agent settings take precedence.
+    # This preserves the target project's hooks/permissions while overlaying agent-specific config.
+    AGENT_SETTINGS="${AGENT_DIR}/.claude/settings.json"
+    PROJECT_SETTINGS="${LAUNCH_DIR}/.claude/settings.json"
+    if [[ -f "${AGENT_SETTINGS}" ]]; then
+        if [[ -f "${PROJECT_SETTINGS}" ]]; then
+            # Merge: project as base, agent settings override
+            MERGED_SETTINGS="${LOG_DIR}/.merged-settings.json"
+            python3 -c "
+import json, sys
+base = json.load(open(sys.argv[1]))
+override = json.load(open(sys.argv[2]))
+def deep_merge(b, o):
+    result = dict(b)
+    for k, v in o.items():
+        if k in result and isinstance(result[k], dict) and isinstance(v, dict):
+            result[k] = deep_merge(result[k], v)
+        elif k in result and isinstance(result[k], list) and isinstance(v, list):
+            result[k] = result[k] + [x for x in v if x not in result[k]]
+        else:
+            result[k] = v
+    return result
+json.dump(deep_merge(base, override), open(sys.argv[3], 'w'), indent=2)
+" "${PROJECT_SETTINGS}" "${AGENT_SETTINGS}" "${MERGED_SETTINGS}" 2>/dev/null
+            if [[ -f "${MERGED_SETTINGS}" ]]; then
+                EXTRA_FLAGS+=(--settings "${MERGED_SETTINGS}")
+            else
+                # Fallback to agent settings only if merge fails
+                EXTRA_FLAGS+=(--settings "${AGENT_SETTINGS}")
+            fi
+        else
+            EXTRA_FLAGS+=(--settings "${AGENT_SETTINGS}")
+        fi
     fi
     # Give agent access to central repo for bus scripts, config, etc.
     EXTRA_FLAGS+=(--add-dir "${TEMPLATE_ROOT}")

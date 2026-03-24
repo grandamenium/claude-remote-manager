@@ -55,7 +55,11 @@ parse_frontmatter() {
             multiline_value="${multiline_value} ${trimmed}"
             continue
         elif [[ -n "${reading_multiline}" ]]; then
-            eval "${reading_multiline}=\"\${multiline_value}\""
+            # Assign without eval to avoid injection risk from untrusted frontmatter
+            case "${reading_multiline}" in
+                description) description="${multiline_value}" ;;
+                name) name="${multiline_value}" ;;
+            esac
             reading_multiline=""
             multiline_value=""
         fi
@@ -83,7 +87,10 @@ parse_frontmatter() {
 
     # Flush remaining multi-line value
     if [[ -n "${reading_multiline}" ]]; then
-        eval "${reading_multiline}=\"\${multiline_value}\""
+        case "${reading_multiline}" in
+            description) description="${multiline_value}" ;;
+            name) name="${multiline_value}" ;;
+        esac
     fi
 
     description=$(echo "${description}" | sed 's/^[[:space:]]*//')
