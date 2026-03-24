@@ -132,6 +132,14 @@ Wait about 10 seconds for the agent to boot up, then verify:
 
 If tmux session doesn't exist, check the logs at `~/.claude-remote/default/logs/<agent_name>/activity.log` and `~/.claude-remote/default/logs/<agent_name>/fast-checker.log` to diagnose.
 
+**If the agent isn't responding:** Claude Code may be waiting for a directory trust approval. Tell the user to attach to the tmux session and check:
+
+```
+tmux attach -t crm-default-<agent_name>
+```
+
+If they see a "Do you trust the files in this folder?" prompt, approve it, then detach with `Ctrl-b d`. The agent will continue booting. This only happens once per agent directory.
+
 If the test passes, congratulate them and IMMEDIATELY continue to Step 6 below. Do NOT wait for the user to confirm the Telegram test - just proceed.
 
 ---

@@ -44,6 +44,8 @@ cd claude-remote-manager
 
 Once running, message your Telegram bot and Claude responds.
 
+> **First-time setup:** On first boot, Claude Code may prompt you to trust the agent directory. If your agent doesn't come online, attach to the tmux session (`tmux attach -t crm-default-<agent-name>`), approve the trust prompt, then detach with `Ctrl-b d`. This only happens once per agent directory.
+
 ## How It Works
 
 ```
