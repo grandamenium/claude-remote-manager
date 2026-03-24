@@ -29,8 +29,20 @@ log() {
 
 log "Starting. Waiting for agent to finish bootstrapping..."
 
-# Give the agent time to bootstrap before polling
-sleep 30
+# Wait for Claude Code to be ready before injecting messages.
+# Detects readiness by checking for the "permissions" status bar text
+# in the tmux pane, which only appears once Claude Code's UI is fully
+# initialized. Falls back to 30s fixed wait if the text is never found
+# (e.g., if Claude Code changes its UI in a future version).
+BOOT_TIMEOUT=30
+BOOT_ELAPSED=0
+while [[ ${BOOT_ELAPSED} -lt ${BOOT_TIMEOUT} ]]; do
+    if tmux capture-pane -t "${TMUX_SESSION}:0.0" -p 2>/dev/null | grep -q "permissions"; then
+        break
+    fi
+    sleep 2
+    BOOT_ELAPSED=$((BOOT_ELAPSED + 2))
+done
 
 log "Bootstrap wait complete. Beginning poll loop."
 
@@ -378,7 +390,7 @@ Reply using: bash ../../core/bus/send-message.sh ${FROM} normal '<your reply>' $
     # --- Inject if anything found ---
     if [[ -n "$MESSAGE_BLOCK" ]]; then
         if inject_messages "$MESSAGE_BLOCK"; then
-            for ack_id in "${INBOX_MSG_IDS[@]}"; do
+            for ack_id in "${INBOX_MSG_IDS[@]+"${INBOX_MSG_IDS[@]}"}"; do
                 bash "${BUS_DIR}/ack-inbox.sh" "$ack_id" 2>/dev/null || true
             done
             # Cooldown after injection
