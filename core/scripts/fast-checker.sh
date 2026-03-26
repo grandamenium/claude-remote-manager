@@ -149,6 +149,15 @@ while true; do
 
     MESSAGE_BLOCK=""
 
+    # --- Kill switch check ---
+    KILL_SWITCH_FILE="${CRM_ROOT}/agents/${AGENT}/kill-switch"
+    if [[ -f "$KILL_SWITCH_FILE" ]]; then
+        REASON=$(cat "$KILL_SWITCH_FILE" 2>/dev/null || echo "paused")
+        log "Kill switch active (${REASON}) — skipping message poll"
+        sleep 5
+        continue
+    fi
+
     # --- Telegram ---
     TG_OUTPUT=$(bash "${BUS_DIR}/check-telegram.sh" 2>/dev/null || echo "")
     if [[ -n "$TG_OUTPUT" ]]; then
