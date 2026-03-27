@@ -50,12 +50,6 @@ fi
 MESSAGES=$(echo "${RESPONSE}" | jq --arg uid "${ALLOWED_USER}" \
     '[.result[] | select(.message.from.id == ($uid | tonumber) or .callback_query.from.id == ($uid | tonumber))]')
 
-# Update offset
-NEW_OFFSET=$(echo "${RESPONSE}" | jq '.result[-1].update_id + 1 // empty')
-if [[ -n "${NEW_OFFSET}" ]]; then
-    echo "${NEW_OFFSET}" > "${OFFSET_FILE}"
-fi
-
 MSG_COUNT=$(echo "${MESSAGES}" | jq 'length')
 
 IMAGE_DIR="${TELEGRAM_IMAGE_DIR:-${TEMPLATE_ROOT}/agents/${ME}/telegram-images}"
@@ -112,4 +106,11 @@ if [[ "${MSG_COUNT}" -gt 0 ]]; then
         date: .callback_query.message.date,
         type: "callback"
     }'
+fi
+
+# Update offset AFTER all messages have been output
+# This prevents silent message loss if the script crashes mid-output
+NEW_OFFSET=$(echo "${RESPONSE}" | jq '.result[-1].update_id + 1 // empty')
+if [[ -n "${NEW_OFFSET}" ]]; then
+    echo "${NEW_OFFSET}" > "${OFFSET_FILE}"
 fi
