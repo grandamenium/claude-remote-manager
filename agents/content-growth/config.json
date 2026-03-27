@@ -1,0 +1,19 @@
+{
+  "agent_name": "content-growth",
+  "enabled": true,
+  "startup_delay": 10,
+  "max_session_seconds": 255600,
+  "model": "claude-haiku-4-5-20251001",
+  "crons": [
+    {
+      "name": "daily-seed-mining",
+      "interval": "cron:0 7 * * *",
+      "prompt": "Mine today's content seeds. Steps:\n1. Check kill switch: GET https://clearpath-production-c86d.up.railway.app/api/guardrails/status?agentId=content-growth with header X-API-Key: $CLEARPATH_API_KEY. If killSwitch true, stop.\n2. Scan CC sessions modified in last 24h: run `ls -t ~/code/knowledge-sync/cc/sessions/ | head -5` then read the 3 most recent files\n3. Get git commits from last 24h: `git -C ~/code/clearpath log --oneline --since='24 hours ago'` and same for ~/code/lifecycle-killer and ~/code/nonprofit-hub\n4. Scan recent memory files: `ls -t ~/.claude/projects/*/memory/*.md | head -10` then read 3 most recently modified\n5. Based on findings, generate 5-8 content seed ideas as punchy hook sentences (under 120 chars each). Real specifics. Bar test. No buzzwords.\n6. POST each seed to https://clearpath-production-c86d.up.railway.app/api/grow/seeds with X-API-Key: $CLEARPATH_API_KEY. Body: {hookText, pillar, suggestedFormat, sourceType, sourceRef}. Pillar must be one of: operational_reality, ai_without_bs, build_in_public, human_side, sector_spotlight, builders_pipeline. suggestedFormat: linkedin_post or newsletter or carousel. sourceType: session or git or memory.\n7. Send Josh Telegram (chat_id 6690120787): 'X seeds added to content feed. Top pick: [best hook]'"
+    },
+    {
+      "name": "weekly-newsletter-prep",
+      "interval": "cron:0 8 * * 1",
+      "prompt": "Monday newsletter prep. Steps:\n1. Check kill switch: GET https://clearpath-production-c86d.up.railway.app/api/guardrails/status?agentId=content-growth with X-API-Key: $CLEARPATH_API_KEY. If killSwitch true, stop.\n2. Scan this week's CC sessions and git commits for the best story, shipped feature, or insight worth writing about\n3. POST to https://clearpath-production-c86d.up.railway.app/api/grow/newsletter/generate with X-API-Key: $CLEARPATH_API_KEY. Body: {weekOf: current Monday date as YYYY-MM-DD, productLine: 'clearworks', brief: {topic: [best topic from scan], audience: 'founders and execs at SMBs considering AI ops'}}\n4. Send Josh Telegram (chat_id 6690120787) with: 'Weekly newsletter draft ready in Grow > Newsletter.' and the 3 subject line options from the response"
+    }
+  ]
+}
