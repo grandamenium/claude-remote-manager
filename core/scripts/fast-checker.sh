@@ -461,6 +461,25 @@ message_id: ${MSG_ID}
 Reply using: bash ../../core/bus/send-telegram.sh ${CHAT_ID} \"<your reply>\"
 
 "
+            elif [[ "$TYPE" == "document" ]]; then
+                DOC_PATH=$(echo "$line" | jq -r '.file_path // ""' 2>/dev/null || echo "")
+                DOC_NAME=$(echo "$line" | jq -r '.file_name // "document"' 2>/dev/null || echo "document")
+                # Auto-reply when agent is busy processing
+                if ! is_agent_idle; then
+                    auto_reply_busy "${CHAT_ID}"
+                fi
+                HUMAN_MSG_PENDING=true
+                HUMAN_MSG_CHAT_ID="${CHAT_ID}"
+                MESSAGE_BLOCK+="=== TELEGRAM DOCUMENT from ${FROM} (chat_id:${CHAT_ID}) ===
+file_name: ${DOC_NAME}
+caption:
+\`\`\`
+${TEXT}
+\`\`\`
+local_file: ${DOC_PATH}
+Reply using: bash ../../core/bus/send-telegram.sh ${CHAT_ID} \"<your reply>\"
+
+"
             elif [[ "$TYPE" == "photo" ]]; then
                 IMAGE_PATH=$(echo "$line" | jq -r '.image_path // ""' 2>/dev/null || echo "")
                 MESSAGE_BLOCK+="=== TELEGRAM PHOTO from ${FROM} (chat_id:${CHAT_ID}) ===
