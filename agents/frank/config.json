@@ -1,0 +1,16 @@
+{
+  "agent_name": "frank",
+  "enabled": true,
+  "startup_delay": 0,
+  "max_session_seconds": 255600,
+  "context_max_hours": 16,
+  "context_max_injections": 150,
+  "crons": [
+    {
+      "name": "heartbeat",
+      "interval": "15m",
+      "prompt": "Heartbeat: check time (PST). Quick checks — (1) git log --oneline -5 for clearpath, lifecycle-killer, nonprofit-hub, note new commits. (2) Check Clearpath fireflies_meetings for last 2h, send Telegram summary to 6690120787 if new. (3) If briefing due and not sent today, dispatch it to a background Agent so the main session stays responsive for Telegram. Use background agents for any heavy data pulls (Gmail, Calendar). Otherwise HEARTBEAT_OK."
+    }
+  ],
+  "model": "claude-opus-4-6"
+}
