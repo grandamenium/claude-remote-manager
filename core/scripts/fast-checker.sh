@@ -147,7 +147,7 @@ inject_messages() {
     grep -v '^$' "$DEDUP_FILE" 2>/dev/null | tail -100 > "${DEDUP_FILE}.tmp" 2>/dev/null && mv "${DEDUP_FILE}.tmp" "$DEDUP_FILE"
 
     local tmpfile
-    tmpfile=$(mktemp "${CRM_ROOT}/logs/${AGENT}/.crm-msg-XXXXXX.txt" 2>/dev/null) || {
+    tmpfile=$(mktemp "/tmp/.crm-msg-XXXXXX" 2>/dev/null) || {
         log "mktemp failed - skipping injection to avoid bare Enter"
         return 1
     }
