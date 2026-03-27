@@ -27,7 +27,20 @@ log() {
     echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) [fast-checker/${AGENT}] $1" >> "$LOG_FILE"
 }
 
-log "Starting. Waiting for agent to finish bootstrapping..."
+# --- Singleton: prevent duplicate fast-checker processes per agent ---
+PIDFILE="${CRM_ROOT}/state/${AGENT}.fast-checker.pid"
+mkdir -p "${CRM_ROOT}/state"
+if [[ -f "$PIDFILE" ]]; then
+    OLD_PID=$(cat "$PIDFILE" 2>/dev/null || echo "")
+    if [[ -n "$OLD_PID" ]] && kill -0 "$OLD_PID" 2>/dev/null; then
+        log "Another fast-checker (pid ${OLD_PID}) already running for ${AGENT}. Exiting."
+        exit 0
+    fi
+fi
+echo $$ > "$PIDFILE"
+trap 'rm -f "$PIDFILE"' EXIT
+
+log "Starting (pid $$). Waiting for agent to finish bootstrapping..."
 
 # Wait for Claude Code to be ready before injecting messages.
 # Detects readiness by checking for the "permissions" status bar text
@@ -104,13 +117,21 @@ inject_messages() {
 
     # --- Dedup check (Fix 8) ---
     local msg_hash
-    msg_hash=$(printf '%s' "$content" | md5 -q 2>/dev/null || printf '%s' "$content" | md5sum 2>/dev/null | cut -d' ' -f1)
-    if [[ -f "$DEDUP_FILE" ]] && grep -qF "$msg_hash" "$DEDUP_FILE" 2>/dev/null; then
+    msg_hash=$(printf '%s' "$content" | md5 -q 2>/dev/null) || msg_hash=""
+    if [[ -z "$msg_hash" ]]; then
+        msg_hash=$(printf '%s' "$content" | md5sum 2>/dev/null | cut -d' ' -f1) || msg_hash=""
+    fi
+    if [[ -z "$msg_hash" ]]; then
+        msg_hash="nohash_$(date +%s)_$$"
+        log "Dedup: hash computation failed, using fallback: ${msg_hash}"
+    fi
+    if [[ -f "$DEDUP_FILE" ]] && grep -qxF "$msg_hash" "$DEDUP_FILE" 2>/dev/null; then
         log "Dedup: skipping duplicate (hash: ${msg_hash:0:8})"
         return 0
     fi
     echo "$msg_hash" >> "$DEDUP_FILE"
-    tail -100 "$DEDUP_FILE" > "${DEDUP_FILE}.tmp" 2>/dev/null && mv "${DEDUP_FILE}.tmp" "$DEDUP_FILE"
+    # Clean dedup file and remove any empty lines
+    grep -v '^$' "$DEDUP_FILE" 2>/dev/null | tail -100 > "${DEDUP_FILE}.tmp" 2>/dev/null && mv "${DEDUP_FILE}.tmp" "$DEDUP_FILE"
 
     local tmpfile
     tmpfile=$(mktemp "${CRM_ROOT}/logs/${AGENT}/.crm-msg-XXXXXX.txt" 2>/dev/null) || {
@@ -466,11 +487,11 @@ Reply using: bash ../../core/bus/send-telegram.sh ${CHAT_ID} \"<your reply>\"
             else
                 # /status command: respond directly from fast-checker (Fix 10)
                 if [[ "$TEXT" == "/status" ]]; then
-                    local NOW_S; NOW_S=$(date +%s)
-                    local UP_H=$(( (NOW_S - SESSION_START) / 3600 ))
-                    local UP_M=$(( ((NOW_S - SESSION_START) % 3600) / 60 ))
-                    local IDLE_STR; is_agent_idle && IDLE_STR="idle" || IDLE_STR="busy"
-                    local STATUS_MSG="*Frank Status*
+                    NOW_S=$(date +%s)
+                    UP_H=$(( (NOW_S - SESSION_START) / 3600 ))
+                    UP_M=$(( ((NOW_S - SESSION_START) % 3600) / 60 ))
+                    is_agent_idle && IDLE_STR="idle" || IDLE_STR="busy"
+                    STATUS_MSG="*${AGENT} Status*
 Uptime: ${UP_H}h ${UP_M}m
 Injections: ${INJECT_COUNT}/${CONTEXT_MAX_INJECTIONS}
 Time: ${UP_H}h/${CONTEXT_MAX_HOURS}h limit
