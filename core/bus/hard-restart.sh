@@ -38,6 +38,9 @@ rm -f "${LOG_DIR}/.crash_count_today"
 mkdir -p "${CRM_ROOT}/state"
 touch "${CRM_ROOT}/state/${AGENT}.force-fresh"
 
+# Clear context tracking state so new session starts fresh
+rm -f "${CRM_ROOT}/state/${AGENT}.session-start"
+
 # Detach a subprocess to perform the restart after a short delay
 nohup bash -c "sleep 10 && launchctl unload '${PLIST}' 2>/dev/null; sleep 1 && launchctl load '${PLIST}'" \
     >> "${LOG_DIR}/restarts.log" 2>&1 &
