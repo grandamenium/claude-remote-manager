@@ -110,20 +110,23 @@ if [[ "${MSG_COUNT}" -gt 0 ]]; then
         file_id: (.message.photo | last | .file_id)
     }')
 
-    # Handle document messages: download and output with local path
+    # Handle document/file messages: download and output with local path
+    DOC_DIR="${TEMPLATE_ROOT}/agents/${ME}/telegram-docs"
+    mkdir -p "${DOC_DIR}"
     while IFS= read -r doc_msg; do
+        [[ -z "$doc_msg" ]] && continue
         CHAT_ID_VAL=$(echo "${doc_msg}" | jq -r '.chat_id')
         FROM_VAL=$(echo "${doc_msg}" | jq -r '.from')
         DATE_VAL=$(echo "${doc_msg}" | jq -r '.date')
         CAPTION_VAL=$(echo "${doc_msg}" | jq -r '.caption // ""')
         FILE_ID=$(echo "${doc_msg}" | jq -r '.file_id')
-        FILE_NAME=$(echo "${doc_msg}" | jq -r '.file_name')
+        FILE_NAME=$(echo "${doc_msg}" | jq -r '.file_name // "document"')
 
         FILE_RESPONSE=$(telegram_api_get "getFile?file_id=${FILE_ID}" 2>/dev/null || echo '{"ok":false}')
         FILE_PATH=$(echo "${FILE_RESPONSE}" | jq -r '.result.file_path // empty')
 
         if [[ -n "${FILE_PATH}" ]]; then
-            LOCAL_FILE="${IMAGE_DIR}/${FILE_NAME}"
+            LOCAL_FILE="${DOC_DIR}/${DATE_VAL}_${FILE_NAME}"
             telegram_file_download "${FILE_PATH}" "${LOCAL_FILE}" 2>/dev/null || true
 
             jq -nc \
