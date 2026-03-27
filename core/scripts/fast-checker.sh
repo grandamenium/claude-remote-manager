@@ -28,17 +28,27 @@ log() {
 }
 
 # --- Singleton: prevent duplicate fast-checker processes per agent ---
+# Use mkdir as an atomic lock (POSIX-portable, works on macOS without flock).
+# The lock dir exists for the lifetime of this process. If another instance
+# starts, mkdir fails atomically and it exits. A stale lock from a crashed
+# process is detected by checking if the recorded PID is still alive.
+LOCKDIR="${CRM_ROOT}/state/${AGENT}.fast-checker.lock"
 PIDFILE="${CRM_ROOT}/state/${AGENT}.fast-checker.pid"
 mkdir -p "${CRM_ROOT}/state"
-if [[ -f "$PIDFILE" ]]; then
+if ! mkdir "$LOCKDIR" 2>/dev/null; then
+    # Lock dir exists — check if holder is still alive
     OLD_PID=$(cat "$PIDFILE" 2>/dev/null || echo "")
     if [[ -n "$OLD_PID" ]] && kill -0 "$OLD_PID" 2>/dev/null; then
         log "Another fast-checker (pid ${OLD_PID}) already running for ${AGENT}. Exiting."
         exit 0
     fi
+    # Stale lock from crashed process — reclaim it
+    log "Reclaiming stale lock (old pid ${OLD_PID} is dead)"
+    rm -rf "$LOCKDIR"
+    mkdir "$LOCKDIR" 2>/dev/null || { log "Lock race lost. Exiting."; exit 0; }
 fi
 echo $$ > "$PIDFILE"
-trap 'rm -f "$PIDFILE"' EXIT
+trap 'rm -rf "$LOCKDIR"; rm -f "$PIDFILE"' EXIT
 
 log "Starting (pid $$). Waiting for agent to finish bootstrapping..."
 
@@ -269,7 +279,14 @@ while true; do
     fi
 
     # --- Telegram ---
-    TG_OUTPUT=$(bash "${BUS_DIR}/check-telegram.sh" 2>/dev/null || echo "")
+    # Capture offset from fd3 so we can commit it AFTER successful injection.
+    TG_OFFSET_FILE=$(mktemp /tmp/crm-tg-offset-XXXXXX 2>/dev/null || echo "/tmp/crm-tg-offset-$$")
+    TG_OUTPUT=$(bash "${BUS_DIR}/check-telegram.sh" 3>"$TG_OFFSET_FILE" 2>/dev/null || echo "")
+    TG_NEW_OFFSET=""
+    if [[ -f "$TG_OFFSET_FILE" ]]; then
+        TG_NEW_OFFSET=$(grep '__OFFSET__:' "$TG_OFFSET_FILE" 2>/dev/null | sed 's/__OFFSET__://' || true)
+        rm -f "$TG_OFFSET_FILE"
+    fi
     if [[ -n "$TG_OUTPUT" ]]; then
         while IFS= read -r line; do
             [[ -z "$line" ]] && continue
@@ -568,11 +585,25 @@ Reply using: bash ../../core/bus/send-message.sh ${FROM} normal '<your reply>' $
     if [[ -n "$MESSAGE_BLOCK" ]]; then
         if inject_messages "$MESSAGE_BLOCK"; then
             INJECT_COUNT=$((INJECT_COUNT + 1))
+            # Commit Telegram offset ONLY after successful injection
+            if [[ -n "$TG_NEW_OFFSET" ]]; then
+                OFFSET_STATE_FILE="${CRM_ROOT}/state/.telegram-offset-${AGENT}"
+                echo "$TG_NEW_OFFSET" > "$OFFSET_STATE_FILE"
+                log "Committed Telegram offset: ${TG_NEW_OFFSET}"
+            fi
             for ack_id in "${INBOX_MSG_IDS[@]+"${INBOX_MSG_IDS[@]}"}"; do
                 bash "${BUS_DIR}/ack-inbox.sh" "$ack_id" 2>/dev/null || true
             done
             # Cooldown after injection
             sleep 5
+        else
+            log "Injection failed — NOT advancing Telegram offset (messages will retry)"
+        fi
+    else
+        # No messages but offset may need advancing (e.g. filtered-out updates from non-allowed users)
+        if [[ -n "$TG_NEW_OFFSET" ]]; then
+            OFFSET_STATE_FILE="${CRM_ROOT}/state/.telegram-offset-${AGENT}"
+            echo "$TG_NEW_OFFSET" > "$OFFSET_STATE_FILE"
         fi
     fi
 
