@@ -70,16 +70,18 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Escape markdown special chars for Telegram
-escape_md() {
-    echo "$1" | sed 's/[_*`\[]/\\&/g'
+# Sanitize text for Telegram code blocks (escape triple backticks)
+sanitize_code_block() {
+    echo "$1" | sed "s/\`\`\`/\`\`\\\\\`/g"
 }
 
 MESSAGE="PERMISSION REQUEST
-Agent: $(escape_md "${AGENT}")
-Tool: $(escape_md "${TOOL_NAME}")
+Agent: ${AGENT}
+Tool: ${TOOL_NAME}
 
-$(escape_md "${TOOL_SUMMARY}")"
+\`\`\`
+$(sanitize_code_block "${TOOL_SUMMARY}")
+\`\`\`"
 
 # Truncate if over Telegram's 4096 char limit
 if [[ ${#MESSAGE} -gt 3800 ]]; then
