@@ -612,21 +612,22 @@ Reply using: bash ../../core/bus/send-message.sh ${FROM} normal '<your reply>' $
 
     # --- Inject if anything found ---
     if [[ -n "$MESSAGE_BLOCK" ]]; then
+        # Commit Telegram offset immediately — dedup hash prevents re-injection on retry
+        if [[ -n "$TG_NEW_OFFSET" ]]; then
+            OFFSET_STATE_FILE="${CRM_ROOT}/state/.telegram-offset-${AGENT}"
+            echo "$TG_NEW_OFFSET" > "$OFFSET_STATE_FILE"
+            log "Committed Telegram offset: ${TG_NEW_OFFSET}"
+            TG_NEW_OFFSET=""  # clear so the else-branch below doesn't double-commit
+        fi
         if inject_messages "$MESSAGE_BLOCK"; then
             INJECT_COUNT=$((INJECT_COUNT + 1))
-            # Commit Telegram offset ONLY after successful injection
-            if [[ -n "$TG_NEW_OFFSET" ]]; then
-                OFFSET_STATE_FILE="${CRM_ROOT}/state/.telegram-offset-${AGENT}"
-                echo "$TG_NEW_OFFSET" > "$OFFSET_STATE_FILE"
-                log "Committed Telegram offset: ${TG_NEW_OFFSET}"
-            fi
             for ack_id in "${INBOX_MSG_IDS[@]+"${INBOX_MSG_IDS[@]}"}"; do
                 bash "${BUS_DIR}/ack-inbox.sh" "$ack_id" 2>/dev/null || true
             done
             # Cooldown after injection
             sleep 5
         else
-            log "Injection failed — NOT advancing Telegram offset (messages will retry)"
+            log "Injection failed — offset already committed, dedup hash will prevent re-injection"
         fi
     else
         # No messages but offset may need advancing (e.g. filtered-out updates from non-allowed users)
