@@ -91,6 +91,9 @@ AUTO_REPLY_COOLDOWN=60  # seconds between auto-replies
 HUMAN_MSG_PENDING=false
 HUMAN_MSG_CHAT_ID=""
 TYPING_LAST_SENT=0
+HUMAN_MSG_PENDING_SINCE=0  # timestamp when last human msg arrived
+
+FROZEN_RESTART_MAX_SECONDS=300  # hard-restart if agent busy for 5+ min with pending human msg
 
 # Telemetry state file (Fix 7)
 STATS_FILE="${CRM_ROOT}/state/${AGENT}.stats.json"
@@ -258,6 +261,11 @@ while true; do
             CONTEXT_RESTART_TRIGGERED=true
             inject_messages "SYSTEM: Context threshold reached (${RESTART_REASON}). Before restarting: 1) Write a handoff file to ${CRM_ROOT}/state/${AGENT}.handoff.md with current tasks, briefings sent today, open threads, and in-progress work. 2) Notify Josh via Telegram you're restarting. 3) Run: bash ../../core/bus/hard-restart.sh --reason '${RESTART_REASON}'"
             rm -f "${SESSION_START_FILE}"
+            # Safety net: if Claude doesn't self-restart within 3 min, force it
+            ( sleep 180; if [[ "$CONTEXT_RESTART_TRIGGERED" == "true" ]]; then
+                log "CONTEXT_THRESHOLD: Claude did not self-restart in 3min — forcing hard-restart"
+                bash "${CRM_ROOT}/core/bus/hard-restart.sh" --reason "forced: context threshold not acted on (${RESTART_REASON})" &
+            fi ) &
         fi
     fi
 
@@ -471,6 +479,7 @@ Reply using: bash ../../core/bus/send-telegram.sh ${CHAT_ID} \"<your reply>\"
                 fi
                 HUMAN_MSG_PENDING=true
                 HUMAN_MSG_CHAT_ID="${CHAT_ID}"
+                HUMAN_MSG_PENDING_SINCE=$(date +%s)
                 MESSAGE_BLOCK+="=== TELEGRAM DOCUMENT from ${FROM} (chat_id:${CHAT_ID}) ===
 file_name: ${DOC_NAME}
 caption:
@@ -525,6 +534,7 @@ Agent: ${IDLE_STR}"
                     # Track human message for typing indicator (Fix 9)
                     HUMAN_MSG_PENDING=true
                     HUMAN_MSG_CHAT_ID="${CHAT_ID}"
+                    HUMAN_MSG_PENDING_SINCE=$(date +%s)
                     MESSAGE_BLOCK+="=== TELEGRAM from ${FROM} (chat_id:${CHAT_ID}) ===
 \`\`\`
 ${TEXT}
@@ -606,8 +616,21 @@ Reply using: bash ../../core/bus/send-message.sh ${FROM} normal '<your reply>' $
                     > /dev/null 2>&1 || true
                 TYPING_LAST_SENT=$NOW_TS
             fi
+            # Frozen detection: if agent has been "busy" for too long, hard-restart
+            PENDING_AGE=$(( NOW_TS - HUMAN_MSG_PENDING_SINCE ))
+            if (( HUMAN_MSG_PENDING_SINCE > 0 && PENDING_AGE >= FROZEN_RESTART_MAX_SECONDS )); then
+                log "FROZEN DETECTED: agent busy for ${PENDING_AGE}s with unhandled human msg — hard-restarting"
+                telegram_api_post "sendMessage" \
+                    -H "Content-Type: application/json" \
+                    -d "$(jq -n -c --arg cid "$HUMAN_MSG_CHAT_ID" --arg txt "Looks like I got stuck. Restarting now..." \
+                        '{chat_id: $cid, text: $txt}')" > /dev/null 2>&1 || true
+                HUMAN_MSG_PENDING=false
+                HUMAN_MSG_PENDING_SINCE=0
+                bash "${CRM_ROOT}/core/bus/hard-restart.sh" --reason "frozen: agent busy ${PENDING_AGE}s with unhandled message" &
+            fi
         else
             HUMAN_MSG_PENDING=false
+            HUMAN_MSG_PENDING_SINCE=0
         fi
     fi
 
