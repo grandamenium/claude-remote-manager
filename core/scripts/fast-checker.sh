@@ -192,8 +192,6 @@ while true; do
 
                 # === AskUserQuestion handlers ===
                 ASK_STATE="/tmp/crm-ask-state-${AGENT}.json"
-                log "DEBUG callback_data='${DATA}' hex=$(printf '%s' "$DATA" | xxd -p | head -c 60)"
-
                 # Single-select: askopt_{questionIdx}_{optionIdx}
                 if [[ "$DATA" =~ ^askopt_([0-9]+)_([0-9]+)$ ]]; then
                     Q_IDX="${BASH_REMATCH[1]}"
