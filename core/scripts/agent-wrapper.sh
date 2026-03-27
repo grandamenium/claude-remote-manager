@@ -299,11 +299,14 @@ trap graceful_shutdown SIGTERM SIGINT
             fi
 
             # Kill old fast-checker and start fresh one
+            # Remove PID lock so the new instance can acquire it
+            rm -f "${CRM_ROOT}/state/${AGENT}.fast-checker.pid"
             pkill -f "fast-checker.sh ${AGENT} " 2>/dev/null || true
             sleep 1
             if [[ -f "${TEMPLATE_ROOT}/core/scripts/fast-checker.sh" ]]; then
                 bash "${TEMPLATE_ROOT}/core/scripts/fast-checker.sh" "${AGENT}" "${TMUX_SESSION}" "${AGENT_DIR}" "${TEMPLATE_ROOT}" \
                     >> "${LOG_DIR}/fast-checker.log" 2>&1 &
+                FAST_PID=$!
             fi
 
             tmux send-keys -t "${TMUX_SESSION}:0.0" \
@@ -318,6 +321,7 @@ trap graceful_shutdown SIGTERM SIGINT
 TIMER_PID=$!
 
 # Kill any stale fast-checker for this agent before starting a fresh one.
+rm -f "${CRM_ROOT}/state/${AGENT}.fast-checker.pid"
 pkill -f "fast-checker.sh ${AGENT} " 2>/dev/null || true
 
 # Start fast message checker (Telegram + inbox polling every 3s)
@@ -334,6 +338,7 @@ while tmux has-session -t "${TMUX_SESSION}" 2>/dev/null; do
     # Watchdog: restart fast-checker if it died unexpectedly
     if [[ -n "${FAST_PID:-}" ]] && ! kill -0 "${FAST_PID}" 2>/dev/null; then
         echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) fast-checker died (pid ${FAST_PID}), restarting" >> "${LOG_DIR}/fast-checker.log"
+        rm -f "${CRM_ROOT}/state/${AGENT}.fast-checker.pid"
         bash "${FAST_CHECKER}" "${AGENT}" "${TMUX_SESSION}" "${AGENT_DIR}" "${TEMPLATE_ROOT}" \
             >> "${LOG_DIR}/fast-checker.log" 2>&1 &
         FAST_PID=$!
