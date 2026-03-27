@@ -343,10 +343,25 @@ fi
 
 # Wait for the tmux session to end
 while tmux has-session -t "${TMUX_SESSION}" 2>/dev/null; do
-    # Watchdog: restart fast-checker if it died unexpectedly
-    if [[ -n "${FAST_PID:-}" ]] && ! kill -0 "${FAST_PID}" 2>/dev/null; then
-        echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) fast-checker died (pid ${FAST_PID}), restarting" >> "${LOG_DIR}/fast-checker.log"
-        rm -f "${CRM_ROOT}/state/${AGENT}.fast-checker.pid"
+    # Watchdog: restart fast-checker if no healthy instance is running
+    # Check PID file first (authoritative), fall back to FAST_PID
+    FC_PIDFILE="${CRM_ROOT}/state/${AGENT}.fast-checker.pid"
+    FC_ALIVE=false
+    if [[ -f "$FC_PIDFILE" ]]; then
+        FC_PID_FROM_FILE=$(cat "$FC_PIDFILE" 2>/dev/null || echo "")
+        if [[ -n "$FC_PID_FROM_FILE" ]] && kill -0 "$FC_PID_FROM_FILE" 2>/dev/null; then
+            FC_ALIVE=true
+        fi
+    fi
+    if [[ "$FC_ALIVE" == "false" ]]; then
+        # Double-check with FAST_PID in case PID file wasn't written yet
+        if [[ -n "${FAST_PID:-}" ]] && kill -0 "${FAST_PID}" 2>/dev/null; then
+            FC_ALIVE=true
+        fi
+    fi
+    if [[ "$FC_ALIVE" == "false" ]]; then
+        echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) fast-checker died, restarting" >> "${LOG_DIR}/fast-checker.log"
+        rm -f "$FC_PIDFILE"
         bash "${FAST_CHECKER}" "${AGENT}" "${TMUX_SESSION}" "${AGENT_DIR}" "${TEMPLATE_ROOT}" \
             >> "${LOG_DIR}/fast-checker.log" 2>&1 &
         FAST_PID=$!
@@ -360,6 +375,12 @@ EXIT_CODE=0
 kill ${TIMER_PID} 2>/dev/null || true
 
 # Kill fast checker alongside session
+FC_PIDFILE="${CRM_ROOT}/state/${AGENT}.fast-checker.pid"
+if [[ -f "$FC_PIDFILE" ]]; then
+    FC_KILL_PID=$(cat "$FC_PIDFILE" 2>/dev/null || echo "")
+    [[ -n "$FC_KILL_PID" ]] && kill "$FC_KILL_PID" 2>/dev/null || true
+    rm -f "$FC_PIDFILE"
+fi
 if [[ -n "${FAST_PID:-}" ]]; then
     kill "${FAST_PID}" 2>/dev/null || true
 fi
