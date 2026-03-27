@@ -1,0 +1,48 @@
+{
+  "hooks": {
+    "PermissionRequest": [
+      {
+        "matcher": "ExitPlanMode",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ../../core/bus/hook-planmode-telegram.sh",
+            "timeout": 1860
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ../../core/bus/hook-permission-telegram.sh",
+            "timeout": 1860
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "AskUserQuestion",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ../../core/bus/hook-ask-telegram.sh",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ../../core/scripts/crash-alert.sh",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}
