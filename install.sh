@@ -77,15 +77,12 @@ cat > "${CRM_ROOT}/config/enabled-agents.json" << 'EOF'
 {}
 EOF
 
-# Write .env to repo root
-cat > "${TEMPLATE_ROOT}/.env" << EOF
+# Write .env to repo root (only if it doesn't already exist, to preserve custom config)
+if [[ ! -f "${TEMPLATE_ROOT}/.env" ]]; then
+    cat > "${TEMPLATE_ROOT}/.env" << EOF
 CRM_INSTANCE_ID=${CRM_INSTANCE_ID}
 CRM_ROOT=${CRM_ROOT}
 EOF
-
-# Copy .env.example if .env doesn't already exist
-if [[ ! -f "${TEMPLATE_ROOT}/.env" ]]; then
-    cp "${TEMPLATE_ROOT}/.env.example" "${TEMPLATE_ROOT}/.env"
 fi
 
 # Make all scripts executable
