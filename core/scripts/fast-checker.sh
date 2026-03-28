@@ -5,7 +5,10 @@
 # Lifecycle: started by agent-wrapper.sh after tmux session is created;
 #            killed by agent-wrapper.sh when tmux session dies
 
-set -uo pipefail
+set -o pipefail
+# Note: intentionally NOT using set -u. For a long-running daemon, an unbound
+# variable should not crash the entire poll loop. All variables are initialized
+# with safe defaults below instead.
 
 AGENT="$1"
 TMUX_SESSION="$2"
@@ -94,9 +97,41 @@ TYPING_LAST_SENT=0
 HUMAN_MSG_PENDING_SINCE=0  # timestamp when last human msg arrived
 
 FROZEN_RESTART_MAX_SECONDS=300  # hard-restart if agent busy for 5+ min with pending human msg
+FROZEN_NUDGE_SENT=0  # whether we've sent a soft nudge before hard-restart
+
+# Passive frozen detection: detect stale agents even without human messages
+LAST_PANE_HASH=""
+PANE_UNCHANGED_SINCE=0  # timestamp when pane content last changed
+PASSIVE_FROZEN_THRESHOLD=600  # 10 min of zero pane change while busy = frozen
+PASSIVE_FROZEN_TRIGGERED=false
 
 # Telemetry state file (Fix 7)
 STATS_FILE="${CRM_ROOT}/state/${AGENT}.stats.json"
+
+# Trigger a hard-restart with retry logic
+do_hard_restart() {
+    local reason="${1:-unknown}"
+    local restart_script="${BUS_DIR}/hard-restart.sh"
+    if [[ -x "$restart_script" ]] || [[ -f "$restart_script" ]]; then
+        log "Executing hard-restart: ${reason}"
+        bash "$restart_script" --reason "$reason" &
+    else
+        log "ERROR: hard-restart.sh not found at ${restart_script} — attempting direct launchctl restart"
+        # Fallback: directly restart via launchctl
+        local plist="${HOME}/Library/LaunchAgents/com.claude-remote.${CRM_INSTANCE_ID}.${AGENT}.plist"
+        if [[ -f "$plist" ]]; then
+            mkdir -p "${CRM_ROOT}/state"
+            touch "${CRM_ROOT}/state/${AGENT}.force-fresh"
+            rm -f "${CRM_ROOT}/state/${AGENT}.session-start"
+            nohup bash -c "sleep 10 && launchctl unload '${plist}' 2>/dev/null; sleep 1 && launchctl load '${plist}'" \
+                >> "${CRM_ROOT}/logs/${AGENT}/restarts.log" 2>&1 &
+            disown
+            log "Fallback launchctl restart scheduled for ${AGENT}"
+        else
+            log "CRITICAL: No plist found at ${plist} — cannot restart ${AGENT}"
+        fi
+    fi
+}
 
 # Check if agent is idle by looking at tmux pane
 is_agent_idle() {
@@ -129,10 +164,11 @@ inject_messages() {
     local content="$1"
 
     # --- Dedup check (Fix 8) ---
-    local msg_hash
-    msg_hash=$(printf '%s' "$content" | md5 -q 2>/dev/null) || msg_hash=""
+    local msg_hash=""
+    # shasum is always available on macOS; md5/md5sum may not be
+    msg_hash=$(printf '%s' "$content" | shasum -a 256 2>/dev/null | cut -d' ' -f1) || msg_hash=""
     if [[ -z "$msg_hash" ]]; then
-        msg_hash=$(printf '%s' "$content" | md5sum 2>/dev/null | cut -d' ' -f1) || msg_hash=""
+        msg_hash=$(printf '%s' "$content" | md5 -q 2>/dev/null) || msg_hash=""
     fi
     if [[ -z "$msg_hash" ]]; then
         msg_hash="nohash_$(date +%s)_$$"
@@ -264,7 +300,7 @@ while true; do
             # Safety net: if Claude doesn't self-restart within 3 min, force it
             ( sleep 180; if [[ "$CONTEXT_RESTART_TRIGGERED" == "true" ]]; then
                 log "CONTEXT_THRESHOLD: Claude did not self-restart in 3min — forcing hard-restart"
-                bash "${BUS_DIR}/hard-restart.sh" --reason "forced: context threshold not acted on (${RESTART_REASON})" &
+                do_hard_restart "forced: context threshold not acted on (${RESTART_REASON})"
             fi ) &
         fi
     fi
@@ -648,8 +684,18 @@ Reply using: bash ../../core/bus/send-message.sh ${FROM} normal '<your reply>' $
                     > /dev/null 2>&1 || true
                 TYPING_LAST_SENT=$NOW_TS
             fi
-            # Frozen detection: if agent has been "busy" for too long, hard-restart
+            # Soft nudge at 60% of threshold — try to unstick agent before hard-restart
             PENDING_AGE=$(( NOW_TS - HUMAN_MSG_PENDING_SINCE ))
+            NUDGE_THRESHOLD=$(( FROZEN_RESTART_MAX_SECONDS * 60 / 100 ))
+            if (( FROZEN_NUDGE_SENT == 0 && HUMAN_MSG_PENDING_SINCE > 0 && PENDING_AGE >= NUDGE_THRESHOLD && PENDING_AGE < FROZEN_RESTART_MAX_SECONDS )); then
+                log "SOFT NUDGE: agent busy for ${PENDING_AGE}s — sending Escape+Enter to try unsticking"
+                tmux send-keys -t "${TMUX_SESSION}:0.0" Escape
+                sleep 0.5
+                tmux send-keys -t "${TMUX_SESSION}:0.0" Enter
+                FROZEN_NUDGE_SENT=1
+            fi
+
+            # Frozen detection: if agent has been "busy" for too long, hard-restart
             if (( HUMAN_MSG_PENDING_SINCE > 0 && PENDING_AGE >= FROZEN_RESTART_MAX_SECONDS )); then
                 log "FROZEN DETECTED: agent busy for ${PENDING_AGE}s with unhandled human msg — hard-restarting"
                 telegram_api_post "sendMessage" \
@@ -658,11 +704,33 @@ Reply using: bash ../../core/bus/send-message.sh ${FROM} normal '<your reply>' $
                         '{chat_id: $cid, text: $txt}')" > /dev/null 2>&1 || true
                 HUMAN_MSG_PENDING=false
                 HUMAN_MSG_PENDING_SINCE=0
-                bash "${BUS_DIR}/hard-restart.sh" --reason "frozen: agent busy ${PENDING_AGE}s with unhandled message" &
+                FROZEN_NUDGE_SENT=0
+                do_hard_restart "frozen: agent busy ${PENDING_AGE}s with unhandled message"
             fi
         else
             HUMAN_MSG_PENDING=false
             HUMAN_MSG_PENDING_SINCE=0
+            FROZEN_NUDGE_SENT=0
+        fi
+    fi
+
+    # --- Passive frozen detection: catch stuck agents even without human messages ---
+    if (( POLL_COUNT % 30 == 0 )); then
+        CURRENT_PANE=$(tmux capture-pane -t "${TMUX_SESSION}:0.0" -p 2>/dev/null | tail -20)
+        CURRENT_PANE_HASH=$(printf '%s' "$CURRENT_PANE" | shasum -a 256 2>/dev/null | cut -d' ' -f1)
+        NOW_TS=$(date +%s)
+
+        if [[ "$CURRENT_PANE_HASH" != "$LAST_PANE_HASH" ]]; then
+            LAST_PANE_HASH="$CURRENT_PANE_HASH"
+            PANE_UNCHANGED_SINCE=$NOW_TS
+            PASSIVE_FROZEN_TRIGGERED=false
+        elif [[ "$PASSIVE_FROZEN_TRIGGERED" == "false" ]] && (( PANE_UNCHANGED_SINCE > 0 )); then
+            STALE_DURATION=$(( NOW_TS - PANE_UNCHANGED_SINCE ))
+            if ! is_agent_idle && (( STALE_DURATION >= PASSIVE_FROZEN_THRESHOLD )); then
+                log "PASSIVE FROZEN: pane unchanged for ${STALE_DURATION}s while agent busy — hard-restarting"
+                PASSIVE_FROZEN_TRIGGERED=true
+                do_hard_restart "passive frozen: pane unchanged ${STALE_DURATION}s while busy"
+            fi
         fi
     fi
 
