@@ -644,8 +644,13 @@ Reply using: bash ../../core/bus/send-message.sh ${FROM} normal '<your reply>' $
 
     # --- Typing indicator while agent processes human message (Fix 9) ---
     if [[ "$HUMAN_MSG_PENDING" == "true" ]]; then
+        NOW_TS=$(date +%s)
+        PENDING_AGE=$(( NOW_TS - HUMAN_MSG_PENDING_SINCE ))
+        # Keep typing active for at least 30s after message injection — agent goes idle
+        # briefly between tool calls which would prematurely clear the indicator
+        TYPING_GRACE_SECONDS=30
+
         if ! is_agent_idle; then
-            NOW_TS=$(date +%s)
             if (( NOW_TS - TYPING_LAST_SENT >= 5 )); then
                 telegram_api_post "sendChatAction" \
                     -H "Content-Type: application/json" \
@@ -654,7 +659,6 @@ Reply using: bash ../../core/bus/send-message.sh ${FROM} normal '<your reply>' $
                 TYPING_LAST_SENT=$NOW_TS
             fi
             # Soft nudge at 60% of threshold — try to unstick agent before hard-restart
-            PENDING_AGE=$(( NOW_TS - HUMAN_MSG_PENDING_SINCE ))
             NUDGE_THRESHOLD=$(( FROZEN_RESTART_MAX_SECONDS * 60 / 100 ))
             if (( FROZEN_NUDGE_SENT == 0 && HUMAN_MSG_PENDING_SINCE > 0 && PENDING_AGE >= NUDGE_THRESHOLD && PENDING_AGE < FROZEN_RESTART_MAX_SECONDS )); then
                 log "SOFT NUDGE: agent busy for ${PENDING_AGE}s — sending Escape+Enter to try unsticking"
@@ -677,6 +681,15 @@ Reply using: bash ../../core/bus/send-message.sh ${FROM} normal '<your reply>' $
                 HUMAN_MSG_PENDING_SINCE=0
                 FROZEN_NUDGE_SENT=0
                 do_hard_restart "frozen: agent busy ${PENDING_AGE}s with unhandled message"
+            fi
+        elif (( PENDING_AGE < TYPING_GRACE_SECONDS )); then
+            # Agent appears idle but within grace period — keep typing indicator active
+            if (( NOW_TS - TYPING_LAST_SENT >= 5 )); then
+                telegram_api_post "sendChatAction" \
+                    -H "Content-Type: application/json" \
+                    -d "$(jq -n -c --arg cid "$HUMAN_MSG_CHAT_ID" '{chat_id: $cid, action: "typing"}')" \
+                    > /dev/null 2>&1 || true
+                TYPING_LAST_SENT=$NOW_TS
             fi
         else
             HUMAN_MSG_PENDING=false
