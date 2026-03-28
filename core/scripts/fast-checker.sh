@@ -96,6 +96,8 @@ HUMAN_MSG_PENDING_SINCE=0  # timestamp when last human msg arrived
 FROZEN_SOFT_NUDGE_SECONDS=120   # soft nudge (Ctrl+C + re-prompt) after 2 min
 FROZEN_RESTART_MAX_SECONDS=300  # hard-restart if agent busy for 5+ min with pending human msg
 FROZEN_NUDGE_SENT=false         # track whether we already sent a soft nudge
+LAST_PANE_HASH=""               # track pane content changes for progress detection
+PANE_STALE_SINCE=0              # when pane content stopped changing
 
 # Live activity streaming state
 ACTIVITY_STREAMING=$(jq -r '.activity_streaming // false' "${AGENT_DIR}/config.json" 2>/dev/null || echo "false")
@@ -750,24 +752,30 @@ Reply using: bash ../../core/bus/send-message.sh ${FROM} normal '<your reply>' $
                     > /dev/null 2>&1 || true
                 TYPING_LAST_SENT=$NOW_TS
             fi
-            # Frozen detection: escalating intervention
-            PENDING_AGE=$(( NOW_TS - HUMAN_MSG_PENDING_SINCE ))
+            # Progress detection: hash tmux pane to see if agent is making progress
+            CURRENT_PANE=$(tmux capture-pane -t "${TMUX_SESSION}:0.0" -p 2>/dev/null | tail -10)
+            CURRENT_HASH=$(printf '%s' "$CURRENT_PANE" | shasum 2>/dev/null | cut -d' ' -f1 || echo "")
+            if [[ "$CURRENT_HASH" != "$LAST_PANE_HASH" ]]; then
+                # Agent is making progress — reset stale timer
+                LAST_PANE_HASH="$CURRENT_HASH"
+                PANE_STALE_SINCE=$NOW_TS
+            fi
+            # Only check frozen if pane has been stale (no progress)
+            STALE_AGE=$(( NOW_TS - PANE_STALE_SINCE ))
 
-            # Stage 1: Soft nudge — interrupt current tool call and re-prompt
-            if (( HUMAN_MSG_PENDING_SINCE > 0 && PENDING_AGE >= FROZEN_SOFT_NUDGE_SECONDS && FROZEN_NUDGE_SENT == false )); then
-                log "FROZEN NUDGE: agent busy for ${PENDING_AGE}s — sending Ctrl+C and re-prompt"
+            # Stage 1: Soft nudge — only if pane stale for 2+ min (no tool output changing)
+            if (( PANE_STALE_SINCE > 0 && STALE_AGE >= FROZEN_SOFT_NUDGE_SECONDS && FROZEN_NUDGE_SENT == false )); then
+                log "FROZEN NUDGE: pane stale for ${STALE_AGE}s — sending Ctrl+C and re-prompt"
                 FROZEN_NUDGE_SENT=true
-                # Ctrl+C interrupts the current tool execution
                 tmux send-keys -t "${TMUX_SESSION}:0.0" C-c
                 sleep 2
-                # Inject a nudge to get the agent to respond
-                inject_messages "SYSTEM: You have been processing for over ${PENDING_AGE} seconds without responding. A user message is waiting. Stop what you are doing and reply to the user on Telegram NOW. Acknowledge their message, explain what you were working on, and ask if they want you to continue. Do NOT resume long processing without replying first."
+                inject_messages "SYSTEM: You have been unresponsive for over ${STALE_AGE} seconds with no visible progress. A user message is waiting. Reply to the user on Telegram NOW — acknowledge their message and explain what happened. Do NOT resume long processing without replying first."
                 INJECT_COUNT=$((INJECT_COUNT + 1))
             fi
 
-            # Stage 2: Hard restart — only if nudge didn't work after another timeout
-            if (( HUMAN_MSG_PENDING_SINCE > 0 && PENDING_AGE >= FROZEN_RESTART_MAX_SECONDS )); then
-                log "FROZEN DETECTED: agent busy for ${PENDING_AGE}s with unhandled human msg — hard-restarting"
+            # Stage 2: Hard restart — only if stale for 5+ min (nudge didn't help)
+            if (( PANE_STALE_SINCE > 0 && STALE_AGE >= FROZEN_RESTART_MAX_SECONDS )); then
+                log "FROZEN DETECTED: pane stale for ${STALE_AGE}s — hard-restarting"
                 telegram_api_post "sendMessage" \
                     -H "Content-Type: application/json" \
                     -d "$(jq -n -c --arg cid "$HUMAN_MSG_CHAT_ID" --arg txt "Looks like I got stuck. Restarting now..." \
@@ -775,12 +783,15 @@ Reply using: bash ../../core/bus/send-message.sh ${FROM} normal '<your reply>' $
                 HUMAN_MSG_PENDING=false
                 HUMAN_MSG_PENDING_SINCE=0
                 FROZEN_NUDGE_SENT=false
-                bash "${BUS_DIR}/hard-restart.sh" --reason "frozen: agent busy ${PENDING_AGE}s with unhandled message" &
+                PANE_STALE_SINCE=0
+                bash "${BUS_DIR}/hard-restart.sh" --reason "frozen: pane stale ${STALE_AGE}s with unhandled message" &
             fi
         else
             HUMAN_MSG_PENDING=false
             HUMAN_MSG_PENDING_SINCE=0
             FROZEN_NUDGE_SENT=false
+            LAST_PANE_HASH=""
+            PANE_STALE_SINCE=0
             LAST_ACTIVITY=""
         fi
     fi
