@@ -93,7 +93,15 @@ HUMAN_MSG_CHAT_ID=""
 TYPING_LAST_SENT=0
 HUMAN_MSG_PENDING_SINCE=0  # timestamp when last human msg arrived
 
+FROZEN_SOFT_NUDGE_SECONDS=120   # soft nudge (Ctrl+C + re-prompt) after 2 min
 FROZEN_RESTART_MAX_SECONDS=300  # hard-restart if agent busy for 5+ min with pending human msg
+FROZEN_NUDGE_SENT=false         # track whether we already sent a soft nudge
+
+# Live activity streaming state
+ACTIVITY_STREAMING=$(jq -r '.activity_streaming // false' "${AGENT_DIR}/config.json" 2>/dev/null || echo "false")
+ACTIVITY_INTERVAL=$(jq -r '.activity_interval_seconds // 8' "${AGENT_DIR}/config.json" 2>/dev/null || echo "8")
+LAST_ACTIVITY=""
+LAST_ACTIVITY_SENT=0
 
 # Telemetry state file (Fix 7)
 STATS_FILE="${CRM_ROOT}/state/${AGENT}.stats.json"
@@ -121,6 +129,82 @@ auto_reply_busy() {
     fi
 }
 
+# Extract current activity from tmux pane for live streaming
+extract_activity() {
+    local pane_text
+    pane_text=$(tmux capture-pane -t "${TMUX_SESSION}:0.0" -p 2>/dev/null | grep -v '^$' | tail -15)
+    [[ -z "$pane_text" ]] && return 1
+
+    local activity=""
+    # Match tool call patterns in Claude Code output (most specific first)
+    if echo "$pane_text" | grep -q "send-telegram.sh"; then
+        return 1  # skip — don't echo telegram sends
+    elif echo "$pane_text" | grep -qiE "search_gmail|gmail_message"; then
+        activity="Checking Gmail..."
+    elif echo "$pane_text" | grep -qiE "get_events|list_calendars|manage_event"; then
+        activity="Checking calendar..."
+    elif echo "$pane_text" | grep -qiE "search_drive|list_drive"; then
+        activity="Searching Google Drive..."
+    elif echo "$pane_text" | grep -qiE "WebSearch|WebFetch"; then
+        activity="Searching the web..."
+    elif echo "$pane_text" | grep -qiE "clearpath-intelligence"; then
+        activity="Pulling Clearpath intelligence..."
+    elif echo "$pane_text" | grep -qE "Agent\b.*prompt"; then
+        activity="Dispatching sub-agent..."
+    elif echo "$pane_text" | grep -qE "^[[:space:]]*(Grep|Glob)"; then
+        activity="Searching codebase..."
+    elif echo "$pane_text" | grep -qE "git log|git diff|git status"; then
+        activity="Checking git history..."
+    elif echo "$pane_text" | grep -qE "^[[:space:]]*Read "; then
+        local fname
+        fname=$(echo "$pane_text" | grep -oE "Read [^ ]+" | tail -1 | sed 's|Read .*/||')
+        activity="Reading ${fname:0:40}..."
+    elif echo "$pane_text" | grep -qE "^[[:space:]]*Edit "; then
+        local fname
+        fname=$(echo "$pane_text" | grep -oE "Edit [^ ]+" | tail -1 | sed 's|Edit .*/||')
+        activity="Editing ${fname:0:40}..."
+    elif echo "$pane_text" | grep -qE "^[[:space:]]*Write "; then
+        local fname
+        fname=$(echo "$pane_text" | grep -oE "Write [^ ]+" | tail -1 | sed 's|Write .*/||')
+        activity="Writing ${fname:0:40}..."
+    elif echo "$pane_text" | grep -qE "^[[:space:]]*Bash"; then
+        local desc
+        desc=$(echo "$pane_text" | grep -oE "Bash:? .*" | tail -1 | head -c 50)
+        activity="Running: ${desc:5:45}..."
+    elif echo "$pane_text" | grep -qE "CronCreate|CronList|CronDelete"; then
+        activity="Managing scheduled tasks..."
+    fi
+
+    [[ -z "$activity" ]] && return 1
+    echo "$activity"
+}
+
+# Send activity status update to Telegram (silent notification)
+send_activity_update() {
+    local chat_id="$1"
+    local activity="$2"
+    local now
+    now=$(date +%s)
+
+    # Throttle: skip if same activity or too soon
+    if [[ "$activity" == "$LAST_ACTIVITY" ]]; then
+        return 0
+    fi
+    if (( now - LAST_ACTIVITY_SENT < ACTIVITY_INTERVAL )); then
+        return 0
+    fi
+
+    telegram_api_post "sendMessage" \
+        -H "Content-Type: application/json" \
+        -d "$(jq -n -c --arg cid "$chat_id" --arg txt "$activity" \
+            '{chat_id: $cid, text: $txt, disable_notification: true}')" \
+        > /dev/null 2>&1 || true
+
+    LAST_ACTIVITY="$activity"
+    LAST_ACTIVITY_SENT=$now
+    log "Activity update to ${chat_id}: ${activity}"
+}
+
 # Dedup: rolling hash file to prevent double-injection on crash recovery
 DEDUP_FILE="${CRM_ROOT}/state/${AGENT}.dedup"
 
@@ -130,7 +214,10 @@ inject_messages() {
 
     # --- Dedup check (Fix 8) ---
     local msg_hash
-    msg_hash=$(printf '%s' "$content" | md5 -q 2>/dev/null) || msg_hash=""
+    msg_hash=$(printf '%s' "$content" | shasum 2>/dev/null | cut -d' ' -f1) || msg_hash=""
+    if [[ -z "$msg_hash" ]]; then
+        msg_hash=$(printf '%s' "$content" | md5 -q 2>/dev/null) || msg_hash=""
+    fi
     if [[ -z "$msg_hash" ]]; then
         msg_hash=$(printf '%s' "$content" | md5sum 2>/dev/null | cut -d' ' -f1) || msg_hash=""
     fi
@@ -155,6 +242,9 @@ inject_messages() {
     printf '%s' "$content" > "$tmpfile"
     local byte_count
     byte_count=$(wc -c < "$tmpfile" | tr -d ' ')
+
+    # No idle wait — inject immediately. Claude Code queues input received
+    # during tool execution and processes it on the next turn.
 
     # load-buffer reads the file into tmux's paste buffer (handles raw bytes).
     # paste-buffer uses bracketed paste mode to inject the content directly
@@ -264,7 +354,7 @@ while true; do
             # Safety net: if Claude doesn't self-restart within 3 min, force it
             ( sleep 180; if [[ "$CONTEXT_RESTART_TRIGGERED" == "true" ]]; then
                 log "CONTEXT_THRESHOLD: Claude did not self-restart in 3min — forcing hard-restart"
-                bash "${CRM_ROOT}/core/bus/hard-restart.sh" --reason "forced: context threshold not acted on (${RESTART_REASON})" &
+                bash "${BUS_DIR}/hard-restart.sh" --reason "forced: context threshold not acted on (${RESTART_REASON})" &
             fi ) &
         fi
     fi
@@ -612,22 +702,22 @@ Reply using: bash ../../core/bus/send-message.sh ${FROM} normal '<your reply>' $
 
     # --- Inject if anything found ---
     if [[ -n "$MESSAGE_BLOCK" ]]; then
-        # Commit Telegram offset immediately — dedup hash prevents re-injection on retry
-        if [[ -n "$TG_NEW_OFFSET" ]]; then
-            OFFSET_STATE_FILE="${CRM_ROOT}/state/.telegram-offset-${AGENT}"
-            echo "$TG_NEW_OFFSET" > "$OFFSET_STATE_FILE"
-            log "Committed Telegram offset: ${TG_NEW_OFFSET}"
-            TG_NEW_OFFSET=""  # clear so the else-branch below doesn't double-commit
-        fi
         if inject_messages "$MESSAGE_BLOCK"; then
             INJECT_COUNT=$((INJECT_COUNT + 1))
+            # Commit Telegram offset ONLY after successful injection
+            if [[ -n "$TG_NEW_OFFSET" ]]; then
+                OFFSET_STATE_FILE="${CRM_ROOT}/state/.telegram-offset-${AGENT}"
+                echo "$TG_NEW_OFFSET" > "$OFFSET_STATE_FILE"
+                log "Committed Telegram offset: ${TG_NEW_OFFSET}"
+                TG_NEW_OFFSET=""
+            fi
             for ack_id in "${INBOX_MSG_IDS[@]+"${INBOX_MSG_IDS[@]}"}"; do
                 bash "${BUS_DIR}/ack-inbox.sh" "$ack_id" 2>/dev/null || true
             done
             # Cooldown after injection
             sleep 5
         else
-            log "Injection failed — offset already committed, dedup hash will prevent re-injection"
+            log "Injection deferred — NOT advancing Telegram offset (will retry next poll)"
         fi
     else
         # No messages but offset may need advancing (e.g. filtered-out updates from non-allowed users)
@@ -637,19 +727,45 @@ Reply using: bash ../../core/bus/send-message.sh ${FROM} normal '<your reply>' $
         fi
     fi
 
-    # --- Typing indicator while agent processes human message (Fix 9) ---
+    # --- Typing indicator + live activity streaming while agent processes human message ---
     if [[ "$HUMAN_MSG_PENDING" == "true" ]]; then
         if ! is_agent_idle; then
             NOW_TS=$(date +%s)
-            if (( NOW_TS - TYPING_LAST_SENT >= 5 )); then
+
+            # Live activity streaming: send status updates instead of just typing indicator
+            ACTIVITY_SENT_THIS_CYCLE=false
+            if [[ "$ACTIVITY_STREAMING" == "true" ]]; then
+                current_activity=$(extract_activity 2>/dev/null) || current_activity=""
+                if [[ -n "$current_activity" ]]; then
+                    send_activity_update "$HUMAN_MSG_CHAT_ID" "$current_activity"
+                    ACTIVITY_SENT_THIS_CYCLE=true
+                fi
+            fi
+
+            # Fall back to typing indicator if no activity update was sent
+            if [[ "$ACTIVITY_SENT_THIS_CYCLE" != "true" ]] && (( NOW_TS - TYPING_LAST_SENT >= 5 )); then
                 telegram_api_post "sendChatAction" \
                     -H "Content-Type: application/json" \
                     -d "$(jq -n -c --arg cid "$HUMAN_MSG_CHAT_ID" '{chat_id: $cid, action: "typing"}')" \
                     > /dev/null 2>&1 || true
                 TYPING_LAST_SENT=$NOW_TS
             fi
-            # Frozen detection: if agent has been "busy" for too long, hard-restart
+            # Frozen detection: escalating intervention
             PENDING_AGE=$(( NOW_TS - HUMAN_MSG_PENDING_SINCE ))
+
+            # Stage 1: Soft nudge — interrupt current tool call and re-prompt
+            if (( HUMAN_MSG_PENDING_SINCE > 0 && PENDING_AGE >= FROZEN_SOFT_NUDGE_SECONDS && FROZEN_NUDGE_SENT == false )); then
+                log "FROZEN NUDGE: agent busy for ${PENDING_AGE}s — sending Ctrl+C and re-prompt"
+                FROZEN_NUDGE_SENT=true
+                # Ctrl+C interrupts the current tool execution
+                tmux send-keys -t "${TMUX_SESSION}:0.0" C-c
+                sleep 2
+                # Inject a nudge to get the agent to respond
+                inject_messages "SYSTEM: You have been processing for over ${PENDING_AGE} seconds without responding. A user message is waiting. Stop what you are doing and reply to the user on Telegram NOW. Acknowledge their message, explain what you were working on, and ask if they want you to continue. Do NOT resume long processing without replying first."
+                INJECT_COUNT=$((INJECT_COUNT + 1))
+            fi
+
+            # Stage 2: Hard restart — only if nudge didn't work after another timeout
             if (( HUMAN_MSG_PENDING_SINCE > 0 && PENDING_AGE >= FROZEN_RESTART_MAX_SECONDS )); then
                 log "FROZEN DETECTED: agent busy for ${PENDING_AGE}s with unhandled human msg — hard-restarting"
                 telegram_api_post "sendMessage" \
@@ -658,11 +774,14 @@ Reply using: bash ../../core/bus/send-message.sh ${FROM} normal '<your reply>' $
                         '{chat_id: $cid, text: $txt}')" > /dev/null 2>&1 || true
                 HUMAN_MSG_PENDING=false
                 HUMAN_MSG_PENDING_SINCE=0
-                bash "${CRM_ROOT}/core/bus/hard-restart.sh" --reason "frozen: agent busy ${PENDING_AGE}s with unhandled message" &
+                FROZEN_NUDGE_SENT=false
+                bash "${BUS_DIR}/hard-restart.sh" --reason "frozen: agent busy ${PENDING_AGE}s with unhandled message" &
             fi
         else
             HUMAN_MSG_PENDING=false
             HUMAN_MSG_PENDING_SINCE=0
+            FROZEN_NUDGE_SENT=false
+            LAST_ACTIVITY=""
         fi
     fi
 
