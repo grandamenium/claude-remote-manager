@@ -264,7 +264,7 @@ while true; do
             # Safety net: if Claude doesn't self-restart within 3 min, force it
             ( sleep 180; if [[ "$CONTEXT_RESTART_TRIGGERED" == "true" ]]; then
                 log "CONTEXT_THRESHOLD: Claude did not self-restart in 3min — forcing hard-restart"
-                bash "${CRM_ROOT}/core/bus/hard-restart.sh" --reason "forced: context threshold not acted on (${RESTART_REASON})" &
+                bash "${BUS_DIR}/hard-restart.sh" --reason "forced: context threshold not acted on (${RESTART_REASON})" &
             fi ) &
         fi
     fi
@@ -625,7 +625,7 @@ Reply using: bash ../../core/bus/send-message.sh ${FROM} normal '<your reply>' $
                         '{chat_id: $cid, text: $txt}')" > /dev/null 2>&1 || true
                 HUMAN_MSG_PENDING=false
                 HUMAN_MSG_PENDING_SINCE=0
-                bash "${CRM_ROOT}/core/bus/hard-restart.sh" --reason "frozen: agent busy ${PENDING_AGE}s with unhandled message" &
+                bash "${BUS_DIR}/hard-restart.sh" --reason "frozen: agent busy ${PENDING_AGE}s with unhandled message" &
             fi
         else
             HUMAN_MSG_PENDING=false
