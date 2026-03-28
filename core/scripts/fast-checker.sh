@@ -95,7 +95,7 @@ HUMAN_MSG_PENDING_SINCE=0  # timestamp when last human msg arrived
 
 FROZEN_SOFT_NUDGE_SECONDS=120   # soft nudge (Ctrl+C + re-prompt) after 2 min
 FROZEN_RESTART_MAX_SECONDS=300  # hard-restart if agent busy for 5+ min with pending human msg
-FROZEN_NUDGE_SENT=false         # track whether we already sent a soft nudge
+FROZEN_NUDGE_SENT=0             # track whether we already sent a soft nudge (0=no, 1=yes)
 LAST_PANE_HASH=""               # track pane content changes for progress detection
 PANE_STALE_SINCE=0              # when pane content stopped changing
 
@@ -764,9 +764,9 @@ Reply using: bash ../../core/bus/send-message.sh ${FROM} normal '<your reply>' $
             STALE_AGE=$(( NOW_TS - PANE_STALE_SINCE ))
 
             # Stage 1: Soft nudge — only if pane stale for 2+ min (no tool output changing)
-            if (( PANE_STALE_SINCE > 0 && STALE_AGE >= FROZEN_SOFT_NUDGE_SECONDS && FROZEN_NUDGE_SENT == false )); then
+            if (( PANE_STALE_SINCE > 0 && STALE_AGE >= FROZEN_SOFT_NUDGE_SECONDS && FROZEN_NUDGE_SENT == 0 )); then
                 log "FROZEN NUDGE: pane stale for ${STALE_AGE}s — sending Ctrl+C and re-prompt"
-                FROZEN_NUDGE_SENT=true
+                FROZEN_NUDGE_SENT=1
                 tmux send-keys -t "${TMUX_SESSION}:0.0" C-c
                 sleep 2
                 inject_messages "SYSTEM: You have been unresponsive for over ${STALE_AGE} seconds with no visible progress. A user message is waiting. Reply to the user on Telegram NOW — acknowledge their message and explain what happened. Do NOT resume long processing without replying first."
@@ -782,14 +782,14 @@ Reply using: bash ../../core/bus/send-message.sh ${FROM} normal '<your reply>' $
                         '{chat_id: $cid, text: $txt}')" > /dev/null 2>&1 || true
                 HUMAN_MSG_PENDING=false
                 HUMAN_MSG_PENDING_SINCE=0
-                FROZEN_NUDGE_SENT=false
+                FROZEN_NUDGE_SENT=0
                 PANE_STALE_SINCE=0
                 bash "${BUS_DIR}/hard-restart.sh" --reason "frozen: pane stale ${STALE_AGE}s with unhandled message" &
             fi
         else
             HUMAN_MSG_PENDING=false
             HUMAN_MSG_PENDING_SINCE=0
-            FROZEN_NUDGE_SENT=false
+            FROZEN_NUDGE_SENT=0
             LAST_PANE_HASH=""
             PANE_STALE_SINCE=0
             LAST_ACTIVITY=""
