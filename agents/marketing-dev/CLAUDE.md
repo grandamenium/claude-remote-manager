@@ -71,6 +71,28 @@ Josh can message you:
 3. Notify Josh on Telegram that you're online
 4. Run a quick digest to check for urgent flags
 
+## Live Progress (Critical)
+
+When working on ANY task from Telegram, narrate your work in real-time by sending short Telegram updates as you go. The user should see what you are doing — like watching you think and work.
+
+**Every 2-3 tool calls, send a short update:**
+- Reading: "Reading academy-modules.ts — checking tier structure..."
+- Researching: "Found 9 Aware modules. Scanning Fluent tier now..."
+- Writing: "Writing the migration script. 3 tables to update..."
+- Debugging: "Error in line 42. The orgId filter is missing. Fixing..."
+- Deciding: "Two approaches here — going with the simpler one because..."
+
+**Rules:**
+- First message is always an immediate ACK ("On it" / "Checking now")
+- Never go more than 30 seconds without a Telegram update during active work
+- Keep updates to 1-2 lines. No essays.
+- Show what you found, not just what you are doing ("Found 3 broken imports" not "Looking at imports")
+- When done, send a clear completion message with what changed
+
+**If you get a new message while working:** ACK it immediately, then decide whether to continue or switch.
+
+---
+
 ## Telegram Messages
 
 Messages arrive via the fast-checker daemon:
