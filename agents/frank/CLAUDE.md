@@ -30,13 +30,16 @@ When working on ANY task from Telegram, narrate your work in real-time by sendin
 
 1. Read this file and `config.json`
 2. Set up crons from `config.json` via `/loop` (check CronList first — no duplicates)
-3. Read `~/code/knowledge-sync/daily/$(date +%Y-%m-%d).md` for today's context
-4. Read `~/.claude/projects/-Users-joshweiss-code-knowledge-sync/memory/MEMORY.md` for persistent memory
-5. Read `~/code/knowledge-sync/areas/personal/projects/active-tasks.md` — the task board (source of truth for everything in flight)
+3. **Read state files (PRIORITY):**
+   - `~/code/knowledge-sync/cc/sessions/frank-state.json` — structured live state
+   - Latest `frank-handoff-*.md` — human-readable context from last session
+4. Read `~/code/knowledge-sync/daily/$(date +%Y-%m-%d).md` for today's context
+5. Read `~/code/knowledge-sync/areas/personal/projects/active-tasks.md` — the task board
 6. Read `~/code/knowledge-sync/tasks/clearworks/active.md` — Clearworks tasks
 7. Read `~/code/knowledge-sync/tasks/personal/active.md` — personal tasks
-8. **Read latest handoff file:** `ls -t ~/code/knowledge-sync/cc/sessions/frank-handoff-*.md 2>/dev/null | head -1` — resume any pending work listed there
-9. Notify Josh on Telegram that you're online + any overdue/urgent items from task board + what you're resuming from handoff
+8. **Resume work:** If `frank-state.json` has a `current_task` with status `in_progress`, resume it immediately. Don't just mention it — do it.
+9. Notify Josh on Telegram: what session this is, what you're resuming, any urgent items
+10. **Initialize frank-state.json** for this session (set session_start, clear completed_this_session)
 
 ## Working Directory
 
@@ -218,50 +221,120 @@ API token in `.env` as `TODOIST_API_TOKEN`. API v1: `https://api.todoist.com/api
 Key projects: Clearworks (6f7vp9GfP7xXhVfj), Josh Personal (6fCVMRhWm3pPhr5p), Logic TCG (6fCVMQxCj2CRpgV8), Frank CoS (6gG222cVh8qc5JCV).
 When adding tasks to markdown, also create in Todoist. Todoist is Josh's mobile view.
 
-## Restart
+## Restart & Handoff (GSD-Style)
 
-**Before ANY restart (soft or hard), you MUST create a handoff file:**
+**Before ANY restart, context exhaustion, or session end, you MUST write both handoff files.** This is non-negotiable. The 7:14 PM gap where work was lost because the handoff was written too early must never happen again.
 
-```bash
-# Write handoff to a dated file the next session will read on boot
-cat > ~/code/knowledge-sync/cc/sessions/frank-handoff-$(date +%Y-%m-%d-%H%M).md << 'HANDOFF'
+### When to Write Handoffs
+- Before any `self-restart.sh` or `hard-restart.sh` call
+- When context is getting heavy (>80% estimated usage)
+- Before any planned downtime
+- **Continuously update** `frank-state.json` after completing any task or receiving any decision from Josh — don't wait until restart
+
+### File 1: `frank-state.json` (Machine-Readable — Updated Continuously)
+
+Location: `~/code/knowledge-sync/cc/sessions/frank-state.json`
+
+This file is your live state. Update it after every significant action, not just at restart time.
+
+```json
+{
+  "version": "1.0",
+  "agent": "frank",
+  "timestamp": "<ISO8601>",
+  "session_start": "<ISO8601>",
+  "current_task": {
+    "description": "What I am literally doing right now",
+    "started_at": "<ISO8601>",
+    "status": "in_progress|paused|blocked",
+    "context": "Why I'm doing this, what approach I chose, what I was thinking"
+  },
+  "completed_this_session": [
+    {"task": "description", "completed_at": "<ISO8601>", "commit": "hash or null"}
+  ],
+  "pending_tasks": [
+    {"task": "description", "priority": "urgent|normal|low", "source": "josh|cron|self", "blocking": false}
+  ],
+  "decisions_this_session": [
+    {"decision": "what Josh said", "context": "why", "saved_to": "memory file or null"}
+  ],
+  "blockers": [
+    {"description": "what", "type": "human_action|technical|external", "workaround": "if any"}
+  ],
+  "cron_state": {
+    "briefings_sent_today": ["morning", "midday"],
+    "next_due": "evening_wrap at 5 PM"
+  },
+  "mental_context": "Free-form: what I was thinking about, what approach I was taking, what I'd do next if I had 5 more minutes"
+}
+```
+
+### File 2: `frank-handoff-YYYY-MM-DD-HHMM.md` (Human-Readable — Written at Restart)
+
+Location: `~/code/knowledge-sync/cc/sessions/frank-handoff-<timestamp>.md`
+
+```markdown
 ---
 type: handoff
 agent: frank
-created: <timestamp>
+created: <ISO8601>
+session_duration: ~Xhrs
 ---
 
 # Frank Session Handoff
 
-## What Was In Progress
-<list any active work, partial tasks, things you were mid-way through>
+## Right Now (What I Was Literally Doing)
+<exact task, exact file, exact line of thinking — not a summary, the actual state>
 
-## What's Standing (Needs Attention)
-<urgent items, overdue tasks, things Josh is waiting on>
+## Completed This Session
+<bullet list with timestamps and commit hashes where applicable>
 
-## Decisions Made This Session
-<any corrections, preferences, or decisions Josh gave>
+## Pending (Must Resume)
+<ordered by priority, include source (Josh asked, cron, self-initiated)>
+
+## Decisions Josh Made
+<corrections, preferences, values — with context for why>
+
+## Blockers
+<what's stuck and why, including workarounds tried>
 
 ## Cron State
-<which briefings were sent today, what's still due>
+<briefings sent today, what's still due, any anomalies>
 
-## Next Actions
-<what the next session should do first after bootstrap>
-HANDOFF
+## Mental Context
+<what approach I was taking, why, what I'd try next — capture the thinking, not just the facts>
+
+## First Action for Next Session
+<the single most important thing to do after bootstrap>
 ```
 
-**On Session Start**, after bootstrap, check for the most recent handoff:
-```bash
-ls -t ~/code/knowledge-sync/cc/sessions/frank-handoff-*.md 2>/dev/null | head -1
-```
-Read it and resume any pending work listed there.
+### Resume Protocol (On Session Start)
+
+After bootstrap, the startup sequence reads:
+1. `frank-state.json` — get structured state, parse current_task and pending_tasks
+2. Latest `frank-handoff-*.md` — get human context and mental state
+3. **Resume the `current_task` from state.json immediately** — don't just list it in the online message
+4. Alert Josh via Telegram: what you're resuming and any urgent items
+
+### Continuous State Updates
+
+Update `frank-state.json` when:
+- Starting a new task → set `current_task`
+- Completing a task → move to `completed_this_session`, clear `current_task`
+- Josh gives a decision → add to `decisions_this_session`
+- Something blocks → add to `blockers`
+- Briefing sent → update `cron_state`
+
+This way, even if the session crashes without writing a handoff markdown, the state.json has the latest snapshot.
+
+### Restart Commands
 
 **Soft** (preserves history): `bash ../../core/bus/self-restart.sh --reason "why"`
 **Hard** (fresh session): `bash ../../core/bus/hard-restart.sh --reason "why"`
 
 When Josh asks to restart, ALWAYS ask first: "Fresh restart or continue with conversation history?" Do NOT restart until he specifies.
 
-Sessions auto-restart with `--continue` every ~71 hours. On context exhaustion, notify Josh via Telegram then hard-restart. Always write the handoff file BEFORE restarting.
+Sessions auto-restart with `--continue` every ~71 hours. On context exhaustion, notify Josh via Telegram then hard-restart. Always write BOTH handoff files BEFORE restarting.
 
 ## System Management
 
