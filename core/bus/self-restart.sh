@@ -25,6 +25,20 @@ CRM_ROOT="${CRM_ROOT:-${HOME}/.claude-remote/${CRM_INSTANCE_ID}}"
 TMUX_SESSION="crm-${CRM_INSTANCE_ID}-${AGENT}"
 REASON="${2:-no reason specified}"
 
+# Load agent .env for Telegram notification
+AGENT_ENV="${TEMPLATE_ROOT}/agents/${AGENT}/.env"
+if [[ -f "${AGENT_ENV}" ]]; then
+    set -a; source "${AGENT_ENV}"; set +a
+fi
+
+# Send Telegram notification before restart
+if [[ -n "${BOT_TOKEN:-}" && -n "${CHAT_ID:-}" ]]; then
+    curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
+        -d chat_id="${CHAT_ID}" \
+        -d text="Soft-restarting ${AGENT}: ${REASON}" \
+        > /dev/null 2>&1 || true
+fi
+
 # Log the restart
 LOG_DIR="${CRM_ROOT}/logs/${AGENT}"
 mkdir -p "${LOG_DIR}"

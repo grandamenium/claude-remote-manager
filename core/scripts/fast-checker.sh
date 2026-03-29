@@ -286,7 +286,21 @@ while true; do
         SHOULD_RESTART=false
         RESTART_REASON=""
 
-        if (( ELAPSED_HOURS >= CONTEXT_MAX_HOURS )); then
+        # Primary: parse actual context % from Claude Code status bar
+        CONTEXT_PCT=0
+        STATUS_BAR=$(tmux capture-pane -t "${TMUX_SESSION}:0.0" -p 2>/dev/null | tail -3)
+        if [[ -n "$STATUS_BAR" ]]; then
+            # Match patterns like "████████░░ 89%" or "89%" in the status bar
+            PCT_MATCH=$(echo "$STATUS_BAR" | grep -oE '[0-9]+%' | head -1 | tr -d '%')
+            if [[ -n "$PCT_MATCH" && "$PCT_MATCH" =~ ^[0-9]+$ ]]; then
+                CONTEXT_PCT=$PCT_MATCH
+            fi
+        fi
+
+        if (( CONTEXT_PCT >= 80 )); then
+            SHOULD_RESTART=true
+            RESTART_REASON="context at ${CONTEXT_PCT}% (threshold: 80%)"
+        elif (( ELAPSED_HOURS >= CONTEXT_MAX_HOURS )); then
             SHOULD_RESTART=true
             RESTART_REASON="session running ${ELAPSED_HOURS}h (limit: ${CONTEXT_MAX_HOURS}h)"
         elif (( INJECT_COUNT >= CONTEXT_MAX_INJECTIONS )); then
@@ -297,13 +311,27 @@ while true; do
         if [[ "$SHOULD_RESTART" == "true" ]]; then
             log "CONTEXT_THRESHOLD: ${RESTART_REASON} — triggering hard-restart"
             CONTEXT_RESTART_TRIGGERED=true
-            inject_messages "SYSTEM: Context threshold reached (${RESTART_REASON}). Before restarting: 1) Write a handoff file to ${CRM_ROOT}/state/${AGENT}.handoff.md with current tasks, briefings sent today, open threads, and in-progress work. 2) Notify Josh via Telegram you're restarting. 3) Run: bash ../../core/bus/hard-restart.sh --reason '${RESTART_REASON}'"
+            inject_messages "SYSTEM: Context threshold reached (${RESTART_REASON}). Before restarting: 1) Write handoff files (state.json + markdown). 2) Notify Josh via Telegram you're restarting. 3) Run: bash ../../core/bus/hard-restart.sh --reason '${RESTART_REASON}'"
             rm -f "${SESSION_START_FILE}"
-            # Safety net: if Claude doesn't self-restart within 3 min, force it
-            ( sleep 180; if [[ "$CONTEXT_RESTART_TRIGGERED" == "true" ]]; then
-                log "CONTEXT_THRESHOLD: Claude did not self-restart in 3min — forcing hard-restart"
-                do_hard_restart "forced: context threshold not acted on (${RESTART_REASON})"
-            fi ) &
+            # Safety net with retry: if Claude doesn't self-restart within 2 min, force it.
+            # Then verify the restart succeeded. If not, retry once more.
+            ( sleep 120
+              log "CONTEXT_THRESHOLD: safety net — forcing hard-restart (${RESTART_REASON})"
+              do_hard_restart "forced: context threshold not acted on (${RESTART_REASON})"
+              # Verify restart succeeded after 90s
+              sleep 90
+              if ! tmux has-session -t "${TMUX_SESSION}" 2>/dev/null; then
+                  log "CONTEXT_THRESHOLD: post-restart verification FAILED — tmux gone. Retry restart."
+                  do_hard_restart "retry: first restart failed (${RESTART_REASON})"
+              else
+                  VERIFY_PANE=$(tmux capture-pane -t "${TMUX_SESSION}:0.0" -p 2>/dev/null | tail -5)
+                  if echo "$VERIFY_PANE" | grep -qE 'permissions|bypass|❯'; then
+                      log "CONTEXT_THRESHOLD: post-restart verification PASSED"
+                  else
+                      log "CONTEXT_THRESHOLD: post-restart verification UNCERTAIN — agent may still be booting"
+                  fi
+              fi
+            ) &
         fi
     fi
 
@@ -544,10 +572,17 @@ Reply using: bash ../../core/bus/send-telegram.sh ${CHAT_ID} \"<your reply>\"
                     UP_H=$(( (NOW_S - SESSION_START) / 3600 ))
                     UP_M=$(( ((NOW_S - SESSION_START) % 3600) / 60 ))
                     is_agent_idle && IDLE_STR="idle" || IDLE_STR="busy"
+                    # Parse context % from status bar
+                    SB=$(tmux capture-pane -t "${TMUX_SESSION}:0.0" -p 2>/dev/null | tail -3)
+                    CTX_S="unknown"
+                    if [[ -n "$SB" ]]; then
+                        CTX_V=$(echo "$SB" | grep -oE '[0-9]+%' | head -1)
+                        [[ -n "$CTX_V" ]] && CTX_S="$CTX_V"
+                    fi
                     STATUS_MSG="*${AGENT} Status*
+Context: ${CTX_S}
 Uptime: ${UP_H}h ${UP_M}m
 Injections: ${INJECT_COUNT}/${CONTEXT_MAX_INJECTIONS}
-Time: ${UP_H}h/${CONTEXT_MAX_HOURS}h limit
 Fast-checker: running (poll ${POLL_COUNT})
 Agent: ${IDLE_STR}"
                     telegram_api_post "sendMessage" \
@@ -754,6 +789,13 @@ Reply using: bash ../../core/bus/send-message.sh ${FROM} normal '<your reply>' $
             HB_TS=$(cat "$HB_FILE_STAT" 2>/dev/null || echo "0")
             [[ "$HB_TS" =~ ^[0-9]+$ ]] && (( HB_TS > 0 )) && HB_AGE_STAT=$(( NOW_TS - HB_TS ))
         fi
+        # Read context % from status bar for telemetry
+        CTX_PCT_STAT=0
+        CTX_BAR=$(tmux capture-pane -t "${TMUX_SESSION}:0.0" -p 2>/dev/null | tail -3)
+        if [[ -n "$CTX_BAR" ]]; then
+            CTX_M=$(echo "$CTX_BAR" | grep -oE '[0-9]+%' | head -1 | tr -d '%')
+            [[ -n "$CTX_M" && "$CTX_M" =~ ^[0-9]+$ ]] && CTX_PCT_STAT=$CTX_M
+        fi
         jq -n -c \
             --argjson uptime "$((NOW_TS - SESSION_START))" \
             --argjson inject_count "$INJECT_COUNT" \
@@ -761,9 +803,10 @@ Reply using: bash ../../core/bus/send-message.sh ${FROM} normal '<your reply>' $
             --argjson hours_limit "$CONTEXT_MAX_HOURS" \
             --argjson poll_count "$POLL_COUNT" \
             --argjson heartbeat_age "$HB_AGE_STAT" \
+            --argjson context_pct "$CTX_PCT_STAT" \
             --arg last_check "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
             --arg agent_state "$(is_agent_idle && echo idle || echo busy)" \
-            '{uptime_s: $uptime, injects: $inject_count, inject_limit: $inject_limit, hours_limit: $hours_limit, polls: $poll_count, heartbeat_age_s: $heartbeat_age, checked: $last_check, agent: $agent_state}' \
+            '{uptime_s: $uptime, injects: $inject_count, inject_limit: $inject_limit, hours_limit: $hours_limit, polls: $poll_count, heartbeat_age_s: $heartbeat_age, context_pct: $context_pct, checked: $last_check, agent: $agent_state}' \
             > "${STATS_FILE}" 2>/dev/null
     fi
 
