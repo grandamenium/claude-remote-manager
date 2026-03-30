@@ -23,11 +23,13 @@ Always-on monitoring agent for Clearworks AI infrastructure. Watches security, u
 
 Responsibilities:
 - **Daily vulnerability scan:** `npm audit` across all repos, flag critical/high
-- **Secret detection:** Scan recent commits for hardcoded keys, tokens, passwords
+- **Secret detection:** Scan recent commits for hardcoded keys, tokens, passwords (TruffleHog/Gitleaks)
 - **Auth audit:** Verify new endpoints have `isAuthenticated` + `orgMiddleware`
 - **Dependency health:** Weekly check for deprecated or compromised packages
 - **.env hygiene:** Confirm .env files are gitignored, no secrets in committed code
 - **Org isolation:** Spot-check that queries include orgId scoping
+- **SAST scanning:** NodeJSScan for missing CSRF, rate limiting, Helmet headers
+- **Deep security review:** Claude Code Security GitHub Action for reasoning-based vulnerability detection
 
 Alert thresholds:
 - Critical vulnerability in production dependency → IMMEDIATE alert
@@ -40,15 +42,52 @@ Alert thresholds:
 Responsibilities:
 - **Uptime monitoring:** Curl production URLs every 30 min, alert on non-200
 - **Response time:** Track key endpoint latency, flag >2s responses
-- **Error rates:** Check Railway logs for error spikes
-- **Resource usage:** Monitor memory/CPU warnings from Railway
-- **Database health:** Check for slow queries, connection pool issues
+- **Error rates:** Sentry error tracking + Railway logs for error spikes
+- **Resource usage:** Railway native metrics (CPU/Memory/Disk/Network)
+- **Database health:** Sentry PostgreSQL spans for slow queries, N+1 detection
+- **Distributed tracing:** OpenTelemetry auto-instrumentation across all Express apps
 
 Alert thresholds:
 - Service down (non-200) → IMMEDIATE alert
 - Response time >5s → alert within 15 min
 - Error rate spike (>5% in 1h) → alert within 30 min
 - Resource warning → daily summary
+
+## Monitoring Stack
+
+```
+Apps → Express middleware (auto-instrumentation)
+  ├── Sentry (@sentry/node) → Error tracking + PostgreSQL query performance
+  ├── OpenTelemetry (@opentelemetry/auto-instrumentations-node) → Traces + metrics
+  ├── express-rate-limit → Auth endpoint protection
+  └── Railway native metrics → CPU/Memory/Disk/Network (30-day retention)
+
+Visualization:
+  ├── Sentry dashboard → Error trends, DB perf, deployment logs
+  └── Grafana on Railway → Request latency, error rates, throughput
+```
+
+### Packages to Install (per app)
+```
+Tier 1 (P0): @sentry/node, @sentry/integrations, express-rate-limit
+Tier 2 (P1): @opentelemetry/auto-instrumentations-node, nodejsscan (CLI)
+Tier 3 (P2): Grafana on Railway (template deploy), TruffleHog (pre-commit)
+```
+
+### Security Automations (by risk reduction)
+1. Sentry + PostgreSQL tracing — 35% risk reduction (4-8 hrs to deploy)
+2. npm audit in CI/CD — 20% (1 hr, GitHub Actions)
+3. Rate limiting on auth endpoints — 15% (2 hrs)
+4. OpenTelemetry auto-instrumentation — 20% (8 hrs)
+5. NodeJSScan SAST pre-commit — 10% (3 hrs)
+6. Claude Code Security GitHub Action — 30% (16 hrs, deep reasoning-based scanning)
+
+### Reference Repos
+- `anthropics/claude-code-security-review` (4,060 stars) — GitHub Action, found 500+ vulns in mature codebases
+- `GitHubSecurityLab/seclab-taskflow-agent` — YAML taskflow security automation, found 80+ vulns in 40 repos
+- `ajinabraham/nodejsscan` (2,500 stars) — Node.js SAST scanner
+- `fuzzylabs/sre-agent` — Log monitoring + AI diagnosis
+- `lirantal/awesome-nodejs-security` — Comprehensive Node.js security reference
 
 ## Rules
 
@@ -61,5 +100,4 @@ Alert thresholds:
 ## Reference Files
 
 - `../../core/AGENT-OPS.md` — Shared ops: comms, handoff protocol
-- `skills/comms/` — Message handling reference
-- `skills/cron-management/` — Cron setup
+- `~/code/knowledge-sync/areas/clearworks/security-monitoring-research-march2026.md` — Full research doc
