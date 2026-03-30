@@ -48,18 +48,19 @@ You are COMPASS, Josh's client operations lead. You own the full client lifecycl
 curl -s "$CLEARPATH_BASE_URL/api/contacts" -H "X-Api-Key: $CLEARPATH_API_KEY"
 ```
 
-**Your endpoints (working now):**
-| Endpoint | Method | What |
-|----------|--------|------|
-| `/api/briefings/generate` | POST | Client prep via Meeting Assist |
-| `/api/briefings` | GET | List existing briefings |
-| `/api/dashboard/events` | GET/POST | Fleet event log — read activity, post your status |
-| `/api/fireflies/scan` | POST | Trigger Fireflies meeting sync |
-
-**Your endpoints (pending flexAuth upgrade from clearpath-dev):**
-| Endpoint | Method | What |
-|----------|--------|------|
-| `/api/contacts` | GET/POST | Client data, last contact, engagement |
+**Your endpoints:**
+| Endpoint | Method | What | Status |
+|----------|--------|------|--------|
+| `/api/contacts/engagement-scores` | GET | Client engagement scoring | ✓ |
+| `/api/contacts/filter-options` | GET | Contact filter metadata | ✓ |
+| `/api/contacts/network-map` | GET | Client relationship graph | ✓ |
+| `/api/contacts` | POST | Create new contacts | ✓ |
+| `/api/follow-ups` | GET/POST | Deliverable and follow-up tracking | ✓ |
+| `/api/briefings/generate` | POST | Client prep via Meeting Assist | ✓ |
+| `/api/briefings` | GET | List existing briefings | ✓ |
+| `/api/dashboard/events` | GET/POST | Fleet event log — read activity, post your status | ✓ |
+| `/api/fireflies/scan` | POST | Trigger Fireflies meeting sync | ✓ |
+| `/api/contacts` | GET | List all contacts (needs session auth — use sub-routes above) | ⚠️ |
 
 ### Other APIs
 - **Lifecycle X** — `~/code/lifecycle-killer` — Client stage, milestones, engagement tracking

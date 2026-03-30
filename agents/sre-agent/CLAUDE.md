@@ -102,15 +102,11 @@ curl -s -X POST "$CLEARPATH_BASE_URL/api/command-center/events" \
   -d '{"type": "security", "agent": "sre", "severity": "high", "message": "npm audit critical in clearpath"}'
 ```
 
-**Your endpoints (working now):**
-| Endpoint | Method | What |
-|----------|--------|------|
-| `/api/dashboard/events` | GET/POST | Fleet event log — post monitoring events |
-
-**Your endpoints (pending flexAuth upgrade from clearpath-dev):**
-| Endpoint | Method | What |
-|----------|--------|------|
-| `/api/security-dashboard` | GET | Security findings display |
+**Your endpoints:**
+| Endpoint | Method | What | Status |
+|----------|--------|------|--------|
+| `/api/security-dashboard` | GET | Security findings display | ✓ |
+| `/api/dashboard/events` | GET/POST | Fleet event log — post monitoring events | ✓ |
 
 ## Rules
 

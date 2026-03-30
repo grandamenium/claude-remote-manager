@@ -53,17 +53,13 @@ You are SENTINEL, Josh's operations lead. You handle the unglamorous but critica
 curl -s "$CLEARPATH_BASE_URL/api/operations" -H "X-Api-Key: $CLEARPATH_API_KEY"
 ```
 
-**Your endpoints (working now):**
-| Endpoint | Method | What |
-|----------|--------|------|
-| `/api/dashboard/events` | GET/POST | Fleet event log — read activity, post your status |
-
-**Your endpoints (pending flexAuth upgrade from clearpath-dev):**
-| Endpoint | Method | What |
-|----------|--------|------|
-| `/api/operations` | GET/POST | Compliance, invoices, SOPs, vendors |
-| `/api/agreements` | GET/POST | Contract tracking, DocuSeal integration |
-| `/api/strategy` | GET | Business strategy alignment |
+**Your endpoints:**
+| Endpoint | Method | What | Status |
+|----------|--------|------|--------|
+| `/api/operations` | GET/POST | Compliance, invoices, SOPs, vendors | ✓ |
+| `/api/strategy/opportunities` | GET | Business strategy alignment, opportunities | ✓ |
+| `/api/dashboard/events` | GET/POST | Fleet event log — read activity, post your status | ✓ |
+| `/api/agreements` | GET/POST | Contract tracking, DocuSeal integration (needs session auth for GET list) | ⚠️ |
 
 ### Other APIs
 - **Adobe PDF Extract API** — Parse contracts, identify clause types. $0.01-0.10/transaction.
