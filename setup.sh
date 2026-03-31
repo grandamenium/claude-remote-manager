@@ -88,14 +88,43 @@ if [[ -z "${BOT_TOKEN}" ]]; then
     exit 1
 fi
 
-# Ask for chat ID
+# Auto-detect Chat ID via long-polling getUpdates
 echo ""
-echo "To get your Chat ID:"
-echo "  1. Send any message to your new bot on Telegram"
-echo "  2. Visit: https://api.telegram.org/bot${BOT_TOKEN}/getUpdates"
-echo "  3. Look for \"chat\":{\"id\":YOUR_CHAT_ID}"
+echo "Almost there! Now link your Telegram account:"
 echo ""
-read -rp "Your Telegram Chat ID: " CHAT_ID
+echo "  1. Open Telegram and find your new bot (search by username)"
+echo "  2. Tap START (or send /start) — this is required for new bots"
+echo "  3. Send any message after /start (e.g. 'hello')"
+echo ""
+echo "Waiting for your message (30 second timeout)..."
+echo ""
+
+CHAT_ID=""
+for attempt in 1 2 3; do
+    UPDATES=$(curl -s --max-time 35 \
+        "https://api.telegram.org/bot${BOT_TOKEN}/getUpdates?timeout=30&offset=0&limit=5" 2>/dev/null || true)
+    CHAT_ID=$(echo "${UPDATES}" | jq -r '[.result[] | select(.message.chat.id != null)] | last | .message.chat.id // empty' 2>/dev/null || true)
+
+    if [[ -n "${CHAT_ID}" && "${CHAT_ID}" != "null" ]]; then
+        FROM_NAME=$(echo "${UPDATES}" | jq -r '[.result[] | select(.message.chat.id != null)] | last | .message.from.first_name // "you"' 2>/dev/null || true)
+        echo "  Detected chat ID: ${CHAT_ID} (from: ${FROM_NAME})"
+        break
+    fi
+
+    if [[ $attempt -lt 3 ]]; then
+        echo "  No message received yet. Make sure you sent /start first, then try again..."
+        sleep 2
+    fi
+done
+
+if [[ -z "${CHAT_ID}" || "${CHAT_ID}" == "null" ]]; then
+    echo ""
+    echo "  Auto-detection timed out. To find your Chat ID manually:"
+    echo "    Visit: https://api.telegram.org/bot${BOT_TOKEN}/getUpdates"
+    echo "    Look for: \"chat\":{\"id\":YOUR_CHAT_ID}"
+    echo ""
+    read -rp "Your Telegram Chat ID: " CHAT_ID
+fi
 
 if [[ -z "${CHAT_ID}" ]]; then
     echo "ERROR: Chat ID cannot be empty."
