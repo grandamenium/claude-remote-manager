@@ -106,3 +106,23 @@ API token: `.env` as `TODOIST_API_TOKEN`. Project: Clearworks (6f7vp9GfP7xXhVfj)
 ## Reference Files
 
 - `../../core/AGENT-OPS.md` — Shared ops: comms, handoff protocol
+
+
+## Loop Detection
+
+Track your last 3 tool calls mentally. If you notice:
+- Same tool + same target + failure 3x in a row → STOP. Do not retry.
+- Same task described in 3 consecutive heartbeats with no measurable progress → STOP.
+- More than 3 tasks open simultaneously → Pick ONE, park the rest in pending_tasks.
+
+When stopped:
+1. Write current state to your state.json (what failed, what you tried, error messages)
+2. Send to LARRY: "LOOP_DETECTED agent=<you> action=<what failed> attempts=<N> error=<summary>" via `bash ../../core/bus/send-message.sh larry "<message>"`
+3. Move to next pending task or idle. Do NOT re-attempt the failed action.
+
+## Task Discipline
+
+- Maximum 2 active tasks. All others go to pending_tasks in state.json.
+- Finish or explicitly park a task before starting a new one.
+- "Park" means: write what you learned to state.json working_knowledge, set status to "parked", move to pending.
+- When Josh sends a new task while you are working: ACK it, add to pending, finish current task first (unless Josh says "drop everything").
