@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # fast-checker.sh - High-frequency Telegram + inbox poller
-# Injects messages into the live Claude Code tmux session via send-keys
+# Injects messages into the live Claude Code session.
+# macOS: via tmux send-keys.  Windows: via typed IPC command files + node-pty.
 # Usage: fast-checker.sh <agent> <tmux_session> <agent_dir> <template_root>
-# Lifecycle: started by agent-wrapper.sh after tmux session is created;
-#            killed by agent-wrapper.sh when tmux session dies
+# Lifecycle: started by agent-wrapper.sh after session is created;
+#            killed by agent-wrapper.sh when session dies
 
 set -uo pipefail
 
@@ -11,6 +12,9 @@ AGENT="$1"
 TMUX_SESSION="$2"
 AGENT_DIR="$3"
 TEMPLATE_ROOT="$4"
+
+# Load platform detection
+source "${TEMPLATE_ROOT}/core/scripts/platform.sh"
 # Load instance ID
 REPO_ENV="${TEMPLATE_ROOT}/.env"
 if [[ -f "${REPO_ENV}" ]]; then
@@ -18,57 +22,118 @@ if [[ -f "${REPO_ENV}" ]]; then
 fi
 CRM_INSTANCE_ID="${CRM_INSTANCE_ID:-default}"
 CRM_ROOT="${HOME}/.claude-remote/${CRM_INSTANCE_ID}"
+export CRM_ROOT CRM_INSTANCE_ID  # Child scripts (check-telegram.sh, check-inbox.sh) need these
 BUS_DIR="${TEMPLATE_ROOT}/core/bus"
 LOG_FILE="${CRM_ROOT}/logs/${AGENT}/fast-checker.log"
 
 mkdir -p "$(dirname "$LOG_FILE")"
 
+# Windows IPC setup
+if is_windows; then
+    INJECT_DIR="${CRM_ROOT}/inject/${AGENT}"
+    mkdir -p "${INJECT_DIR}"
+fi
+
 log() {
     echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) [fast-checker/${AGENT}] $1" >> "$LOG_FILE"
+}
+
+# Write a typed IPC command file (Windows only)
+# Usage: write_ipc_cmd '{"type":"inject","content":"hello"}'
+write_ipc_cmd() {
+    local json="$1"
+    local ts
+    ts=$(date +%s%N | cut -c1-13)  # epoch milliseconds
+    local tmpfile="${INJECT_DIR}/${ts}-${RANDOM}.tmp"
+    local cmdfile="${INJECT_DIR}/${ts}-${RANDOM}.cmd"
+    printf '%s' "$json" > "$tmpfile"
+    mv "$tmpfile" "$cmdfile"
+}
+
+# Send a keystroke via IPC (Windows only)
+# Usage: send_key "Enter" or send_key "Down"
+send_key() {
+    write_ipc_cmd "{\"type\":\"key\",\"key\":\"$1\"}"
+}
+
+# Send a sequence of keystrokes via IPC (Windows only)
+# Usage: send_key_sequence "Down" "Down" "Enter"
+send_key_sequence() {
+    local ops=""
+    local first=true
+    for key in "$@"; do
+        if [[ "$first" == "true" ]]; then
+            first=false
+        else
+            ops+=","
+        fi
+        ops+="{\"type\":\"key\",\"key\":\"${key}\"}"
+    done
+    write_ipc_cmd "{\"type\":\"sequence\",\"ops\":[${ops}]}"
 }
 
 log "Starting. Waiting for agent to finish bootstrapping..."
 
 # Wait for Claude Code to be ready before injecting messages.
-# Detects readiness by checking for the "permissions" status bar text
-# in the tmux pane, which only appears once Claude Code's UI is fully
-# initialized. Falls back to 30s fixed wait if the text is never found
-# (e.g., if Claude Code changes its UI in a future version).
 BOOT_TIMEOUT=30
 BOOT_ELAPSED=0
-while [[ ${BOOT_ELAPSED} -lt ${BOOT_TIMEOUT} ]]; do
-    if tmux capture-pane -t "${TMUX_SESSION}:0.0" -p 2>/dev/null | grep -q "permissions"; then
-        break
-    fi
-    sleep 2
-    BOOT_ELAPSED=$((BOOT_ELAPSED + 2))
-done
+if is_macos; then
+    # macOS: check tmux pane for "permissions" status bar text
+    while [[ ${BOOT_ELAPSED} -lt ${BOOT_TIMEOUT} ]]; do
+        if tmux capture-pane -t "${TMUX_SESSION}:0.0" -p 2>/dev/null | grep -q "permissions"; then
+            break
+        fi
+        sleep 2
+        BOOT_ELAPSED=$((BOOT_ELAPSED + 2))
+    done
+elif is_windows; then
+    # Windows: poll status file written by win-agent-wrapper.js
+    STATUS_FILE="${CRM_ROOT}/logs/${AGENT}/status"
+    while [[ ${BOOT_ELAPSED} -lt ${BOOT_TIMEOUT} ]]; do
+        if [[ -f "${STATUS_FILE}" ]] && grep -q "ready" "${STATUS_FILE}" 2>/dev/null; then
+            break
+        fi
+        sleep 2
+        BOOT_ELAPSED=$((BOOT_ELAPSED + 2))
+    done
+fi
 
 log "Bootstrap wait complete. Beginning poll loop."
 
 # Inject a block of messages into the Claude Code session.
 inject_messages() {
     local content="$1"
-    local tmpfile
-    tmpfile=$(mktemp "${CRM_ROOT}/logs/${AGENT}/.crm-msg-XXXXXX.txt" 2>/dev/null) || {
-        log "mktemp failed - skipping injection to avoid bare Enter"
-        return 1
-    }
-    chmod 600 "$tmpfile"
-    printf '%s' "$content" > "$tmpfile"
-    local byte_count
-    byte_count=$(wc -c < "$tmpfile" | tr -d ' ')
 
-    # load-buffer reads the file into tmux's paste buffer (handles raw bytes).
-    # paste-buffer uses bracketed paste mode to inject the content directly
-    # into Claude's input field inline. Enter submits.
-    tmux load-buffer -b "crm-${AGENT}" "$tmpfile"
-    tmux paste-buffer -t "${TMUX_SESSION}:0.0" -b "crm-${AGENT}"
-    sleep 0.3  # Let paste content land in PTY buffer before sending Enter
-    tmux send-keys -t "${TMUX_SESSION}:0.0" Enter
-    rm -f "$tmpfile"
+    if is_macos; then
+        local tmpfile
+        tmpfile=$(mktemp "${CRM_ROOT}/logs/${AGENT}/.crm-msg-XXXXXX.txt" 2>/dev/null) || {
+            log "mktemp failed - skipping injection to avoid bare Enter"
+            return 1
+        }
+        chmod 600 "$tmpfile"
+        printf '%s' "$content" > "$tmpfile"
+        local byte_count
+        byte_count=$(wc -c < "$tmpfile" | tr -d ' ')
 
-    log "Injected ${byte_count} bytes inline via paste-buffer"
+        # load-buffer reads the file into tmux's paste buffer (handles raw bytes).
+        # paste-buffer uses bracketed paste mode to inject the content directly
+        # into Claude's input field inline. Enter submits.
+        tmux load-buffer -b "crm-${AGENT}" "$tmpfile"
+        tmux paste-buffer -t "${TMUX_SESSION}:0.0" -b "crm-${AGENT}"
+        sleep 0.3  # Let paste content land in PTY buffer before sending Enter
+        tmux send-keys -t "${TMUX_SESSION}:0.0" Enter
+        rm -f "$tmpfile"
+
+        log "Injected ${byte_count} bytes inline via paste-buffer"
+    elif is_windows; then
+        # Windows: write typed IPC command to queue directory
+        # Use jq for proper JSON encoding (handles all control chars, Unicode, etc.)
+        local json_cmd
+        json_cmd=$(printf '%s' "$content" | jq -Rsc '{"type":"inject","content":.}')
+        write_ipc_cmd "$json_cmd"
+        local byte_count=${#content}
+        log "Injected ${byte_count} bytes via IPC command file"
+    fi
 }
 
 # Main poll loop
@@ -141,10 +206,29 @@ send_next_question() {
 }
 
 while true; do
-    # Exit if tmux session is gone
-    if ! tmux has-session -t "${TMUX_SESSION}" 2>/dev/null; then
-        log "Tmux session gone. Exiting."
-        exit 0
+    # Exit if session is gone
+    if is_macos; then
+        if ! tmux has-session -t "${TMUX_SESSION}" 2>/dev/null; then
+            log "Tmux session gone. Exiting."
+            exit 0
+        fi
+    elif is_windows; then
+        # Check status file — exit if wrapper signaled shutdown/rate-limit/crash-halt
+        # On Windows, kill -0 cannot check native Windows PIDs from Git Bash,
+        # so we rely on the status file written by win-agent-wrapper.js as the
+        # authoritative liveness signal.
+        WIN_STATUS_FILE="${CRM_ROOT}/logs/${AGENT}/status"
+        if [[ -f "${WIN_STATUS_FILE}" ]]; then
+            WIN_STATUS=$(cat "${WIN_STATUS_FILE}" 2>/dev/null)
+            if [[ "${WIN_STATUS}" == "stopped" || "${WIN_STATUS}" == "rate-limited" || "${WIN_STATUS}" == "halted" ]]; then
+                log "Wrapper status is '${WIN_STATUS}'. Exiting."
+                exit 0
+            fi
+        else
+            # No status file at all — wrapper hasn't started yet or crashed before writing
+            log "No status file found. Exiting."
+            exit 0
+        fi
     fi
 
     MESSAGE_BLOCK=""
@@ -157,7 +241,7 @@ while true; do
             TYPE=$(echo "$line" | jq -r '.type // "message"' 2>/dev/null || echo "message")
             FROM=$(echo "$line" | jq -r '.from // "unknown"' 2>/dev/null || echo "unknown")
             TEXT=$(echo "$line" | jq -r '.text // ""' 2>/dev/null || echo "")
-            CHAT_ID=$(echo "$line" | jq -r '.chat_id // ""' 2>/dev/null || echo "")
+            MSG_CHAT_ID=$(echo "$line" | jq -r '.chat_id // ""' 2>/dev/null || echo "")
 
             # Sanitize FROM to prevent header injection
             if [[ ! "${FROM}" =~ ^[a-zA-Z0-9_\ -]+$ ]]; then
@@ -184,7 +268,7 @@ while true; do
 
                     bash "${BUS_DIR}/answer-callback.sh" "$CALLBACK_QID" "Got it" 2>/dev/null || true
                     DECISION_LABEL="$(echo "$PERM_DECISION" | sed 's/allow/Approved/;s/deny/Denied/;s/continue/Continue in Chat/')"
-                    bash "${BUS_DIR}/edit-message.sh" "$CHAT_ID" "$MSG_ID" "${DECISION_LABEL}" 2>/dev/null || true
+                    bash "${BUS_DIR}/edit-message.sh" "$MSG_CHAT_ID" "$MSG_ID" "${DECISION_LABEL}" 2>/dev/null || true
 
                     log "Permission callback: ${PERM_DECISION} for ${PERM_ID}"
                     continue
@@ -198,15 +282,22 @@ while true; do
                     O_IDX="${BASH_REMATCH[2]}"
 
                     bash "${BUS_DIR}/answer-callback.sh" "$CALLBACK_QID" "Got it" 2>/dev/null || true
-                    bash "${BUS_DIR}/edit-message.sh" "$CHAT_ID" "$MSG_ID" "Answered" 2>/dev/null || true
+                    bash "${BUS_DIR}/edit-message.sh" "$MSG_CHAT_ID" "$MSG_ID" "Answered" 2>/dev/null || true
 
                     # Navigate TUI: Down * O_IDX, then Enter to select + advance
-                    for ((k=0; k<O_IDX; k++)); do
-                        tmux send-keys -t "${TMUX_SESSION}:0.0" Down
-                        sleep 0.1
-                    done
-                    sleep 0.2
-                    tmux send-keys -t "${TMUX_SESSION}:0.0" Enter
+                    if is_macos; then
+                        for ((k=0; k<O_IDX; k++)); do
+                            tmux send-keys -t "${TMUX_SESSION}:0.0" Down
+                            sleep 0.1
+                        done
+                        sleep 0.2
+                        tmux send-keys -t "${TMUX_SESSION}:0.0" Enter
+                    elif is_windows; then
+                        keys=()
+                        for ((k=0; k<O_IDX; k++)); do keys+=("Down"); done
+                        keys+=("Enter")
+                        send_key_sequence "${keys[@]}"
+                    fi
 
                     log "AskUserQuestion: Q${Q_IDX} selected option ${O_IDX}"
 
@@ -223,7 +314,11 @@ while true; do
                         else
                             # Last question answered - hit Enter on the Submit button
                             sleep 0.5
-                            tmux send-keys -t "${TMUX_SESSION}:0.0" Enter
+                            if is_macos; then
+                                tmux send-keys -t "${TMUX_SESSION}:0.0" Enter
+                            elif is_windows; then
+                                send_key "Enter"
+                            fi
                             log "AskUserQuestion: submitted all answers"
                             rm -f "$ASK_STATE"
                         fi
@@ -251,7 +346,7 @@ while true; do
                         # Update the Telegram message to show current selections
                         CHOSEN=$(jq -r '.multi_select_chosen | sort | map(. + 1) | map(tostring) | join(", ")' "$ASK_STATE" 2>/dev/null)
                         if [[ -n "$CHOSEN" && "$CHOSEN" != "" ]]; then
-                            bash "${BUS_DIR}/edit-message.sh" "$CHAT_ID" "$MSG_ID" "Selected: ${CHOSEN}
+                            bash "${BUS_DIR}/edit-message.sh" "$MSG_CHAT_ID" "$MSG_ID" "Selected: ${CHOSEN}
 Tap more options or Submit" '{"inline_keyboard":'"$(jq -c '.questions['"$Q_IDX"'].options | [to_entries[] | [{text: (.value // "Option \(.key+1)"), callback_data: "asktoggle_'"$Q_IDX"'_\(.key)"}]] + [[{text: "Submit Selections", callback_data: "asksubmit_'"$Q_IDX"'"}]]' "$ASK_STATE" 2>/dev/null)"'}' 2>/dev/null || true
                         fi
                     fi
@@ -265,7 +360,7 @@ Tap more options or Submit" '{"inline_keyboard":'"$(jq -c '.questions['"$Q_IDX"'
                     Q_IDX="${BASH_REMATCH[1]}"
 
                     bash "${BUS_DIR}/answer-callback.sh" "$CALLBACK_QID" "Submitted" 2>/dev/null || true
-                    bash "${BUS_DIR}/edit-message.sh" "$CHAT_ID" "$MSG_ID" "Submitted" 2>/dev/null || true
+                    bash "${BUS_DIR}/edit-message.sh" "$MSG_CHAT_ID" "$MSG_ID" "Submitted" 2>/dev/null || true
 
                     if [[ -f "$ASK_STATE" ]]; then
                         # Get chosen indices and navigate TUI
@@ -274,26 +369,39 @@ Tap more options or Submit" '{"inline_keyboard":'"$(jq -c '.questions['"$Q_IDX"'
                         # For multi-select TUI: navigate to each chosen option and press Space
                         TOTAL_OPTS=$(jq -r ".questions[${Q_IDX}].options | length" "$ASK_STATE" 2>/dev/null || echo "4")
                         CURRENT_POS=0
-                        for idx in $CHOSEN_INDICES; do
-                            MOVES=$((idx - CURRENT_POS))
-                            for ((k=0; k<MOVES; k++)); do
+                        if is_macos; then
+                            for idx in $CHOSEN_INDICES; do
+                                MOVES=$((idx - CURRENT_POS))
+                                for ((k=0; k<MOVES; k++)); do
+                                    tmux send-keys -t "${TMUX_SESSION}:0.0" Down
+                                    sleep 0.1
+                                done
+                                tmux send-keys -t "${TMUX_SESSION}:0.0" Space
+                                sleep 0.1
+                                CURRENT_POS=$idx
+                            done
+                            SUBMIT_POS=$((TOTAL_OPTS + 1))
+                            REMAINING=$((SUBMIT_POS - CURRENT_POS))
+                            for ((k=0; k<REMAINING; k++)); do
                                 tmux send-keys -t "${TMUX_SESSION}:0.0" Down
                                 sleep 0.1
                             done
-                            tmux send-keys -t "${TMUX_SESSION}:0.0" Space
-                            sleep 0.1
-                            CURRENT_POS=$idx
-                        done
-                        # Navigate past all options (including "Other") to the Submit button
-                        # Options count + 1 for "Other" auto-added by Claude Code
-                        SUBMIT_POS=$((TOTAL_OPTS + 1))
-                        REMAINING=$((SUBMIT_POS - CURRENT_POS))
-                        for ((k=0; k<REMAINING; k++)); do
-                            tmux send-keys -t "${TMUX_SESSION}:0.0" Down
-                            sleep 0.1
-                        done
-                        sleep 0.2
-                        tmux send-keys -t "${TMUX_SESSION}:0.0" Enter
+                            sleep 0.2
+                            tmux send-keys -t "${TMUX_SESSION}:0.0" Enter
+                        elif is_windows; then
+                            keys=()
+                            for idx in $CHOSEN_INDICES; do
+                                MOVES=$((idx - CURRENT_POS))
+                                for ((k=0; k<MOVES; k++)); do keys+=("Down"); done
+                                keys+=("Space")
+                                CURRENT_POS=$idx
+                            done
+                            SUBMIT_POS=$((TOTAL_OPTS + 1))
+                            REMAINING=$((SUBMIT_POS - CURRENT_POS))
+                            for ((k=0; k<REMAINING; k++)); do keys+=("Down"); done
+                            keys+=("Enter")
+                            send_key_sequence "${keys[@]}"
+                        fi
 
                         log "AskUserQuestion: Q${Q_IDX} submitted multi-select"
 
@@ -310,7 +418,11 @@ Tap more options or Submit" '{"inline_keyboard":'"$(jq -c '.questions['"$Q_IDX"'
                         else
                             # Last question answered - hit Enter on the Submit button
                             sleep 0.5
-                            tmux send-keys -t "${TMUX_SESSION}:0.0" Enter
+                            if is_macos; then
+                                tmux send-keys -t "${TMUX_SESSION}:0.0" Enter
+                            elif is_windows; then
+                                send_key "Enter"
+                            fi
                             log "AskUserQuestion: submitted all answers"
                             rm -f "$ASK_STATE"
                         fi
@@ -318,21 +430,21 @@ Tap more options or Submit" '{"inline_keyboard":'"$(jq -c '.questions['"$Q_IDX"'
                     continue
                 fi
 
-                MESSAGE_BLOCK+="=== TELEGRAM CALLBACK from ${FROM} (chat_id:${CHAT_ID}) ===
+                MESSAGE_BLOCK+="=== TELEGRAM CALLBACK from ${FROM} (chat_id:${MSG_CHAT_ID}) ===
 callback_data: \`${DATA}\`
 message_id: ${MSG_ID}
-Reply using: bash ../../core/bus/send-telegram.sh ${CHAT_ID} \"<your reply>\"
+Reply using: bash ../../core/bus/send-telegram.sh ${MSG_CHAT_ID} \"<your reply>\"
 
 "
             elif [[ "$TYPE" == "photo" ]]; then
                 IMAGE_PATH=$(echo "$line" | jq -r '.image_path // ""' 2>/dev/null || echo "")
-                MESSAGE_BLOCK+="=== TELEGRAM PHOTO from ${FROM} (chat_id:${CHAT_ID}) ===
+                MESSAGE_BLOCK+="=== TELEGRAM PHOTO from ${FROM} (chat_id:${MSG_CHAT_ID}) ===
 caption:
 \`\`\`
 ${TEXT}
 \`\`\`
 local_file: ${IMAGE_PATH}
-Reply using: bash ../../core/bus/send-telegram.sh ${CHAT_ID} \"<your reply>\"
+Reply using: bash ../../core/bus/send-telegram.sh ${MSG_CHAT_ID} \"<your reply>\"
 
 "
             else
@@ -341,11 +453,11 @@ Reply using: bash ../../core/bus/send-telegram.sh ${CHAT_ID} \"<your reply>\"
                     MESSAGE_BLOCK+="${TEXT}
 "
                 else
-                    MESSAGE_BLOCK+="=== TELEGRAM from ${FROM} (chat_id:${CHAT_ID}) ===
+                    MESSAGE_BLOCK+="=== TELEGRAM from ${FROM} (chat_id:${MSG_CHAT_ID}) ===
 \`\`\`
 ${TEXT}
 \`\`\`
-Reply using: bash ../../core/bus/send-telegram.sh ${CHAT_ID} \"<your reply>\"
+Reply using: bash ../../core/bus/send-telegram.sh ${MSG_CHAT_ID} \"<your reply>\"
 
 "
                 fi

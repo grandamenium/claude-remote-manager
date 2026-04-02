@@ -4,17 +4,60 @@
 
 set -euo pipefail
 
-# Dependency checks
+# Load platform detection
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+if [[ -f "${SCRIPT_DIR}/core/scripts/platform.sh" ]]; then
+    source "${SCRIPT_DIR}/core/scripts/platform.sh"
+else
+    # Inline fallback for first-run before platform.sh exists
+    is_windows() { [[ "$OSTYPE" == "msys" || "$OSTYPE" == "cygwin" || "${OS:-}" == "Windows_NT" ]]; }
+    is_macos() { [[ "$OSTYPE" == "darwin"* ]]; }
+fi
+
+# Dependency checks (platform-gated)
 MISSING=""
-command -v tmux >/dev/null 2>&1 || MISSING="${MISSING} tmux"
-command -v jq >/dev/null 2>&1 || MISSING="${MISSING} jq"
+if is_macos; then
+    command -v tmux >/dev/null 2>&1 || MISSING="${MISSING} tmux"
+elif is_windows; then
+    command -v node >/dev/null 2>&1 || MISSING="${MISSING} node"
+    command -v pm2 >/dev/null 2>&1 || MISSING="${MISSING} pm2"
+fi
 command -v claude >/dev/null 2>&1 || MISSING="${MISSING} claude"
+
+# Auto-install jq on Windows if missing (not included with Git for Windows)
+if ! command -v jq >/dev/null 2>&1; then
+    if is_windows; then
+        echo "jq not found. Installing automatically..."
+        JQ_INSTALL_DIR="${HOME}/.local/bin"
+        mkdir -p "${JQ_INSTALL_DIR}"
+        if curl -sL "https://github.com/jqlang/jq/releases/download/jq-1.7.1/jq-windows-amd64.exe" -o "${JQ_INSTALL_DIR}/jq.exe"; then
+            chmod +x "${JQ_INSTALL_DIR}/jq.exe"
+            if command -v jq >/dev/null 2>&1; then
+                echo "  jq $(jq --version) installed to ${JQ_INSTALL_DIR}/jq.exe"
+            else
+                echo "  jq installed but not on PATH. Add ${JQ_INSTALL_DIR} to your PATH."
+                MISSING="${MISSING} jq"
+            fi
+        else
+            echo "  Failed to download jq. Install manually: https://jqlang.github.io/jq/"
+            MISSING="${MISSING} jq"
+        fi
+    else
+        MISSING="${MISSING} jq"
+    fi
+fi
 
 if [[ -n "$MISSING" ]]; then
     echo "ERROR: Missing required dependencies:${MISSING}"
     echo ""
-    [[ "$MISSING" == *"tmux"* ]] && echo "  tmux:   brew install tmux"
-    [[ "$MISSING" == *"jq"* ]] && echo "  jq:     brew install jq"
+    if is_macos; then
+        [[ "$MISSING" == *"tmux"* ]] && echo "  tmux:   brew install tmux"
+        [[ "$MISSING" == *"jq"* ]] && echo "  jq:     brew install jq"
+    elif is_windows; then
+        [[ "$MISSING" == *"node"* ]] && echo "  node:   https://nodejs.org/ (v18+ required)"
+        [[ "$MISSING" == *"pm2"* ]] && echo "  pm2:    npm install -g pm2"
+        [[ "$MISSING" == *"jq"* ]] && echo "  jq:     https://jqlang.github.io/jq/"
+    fi
     [[ "$MISSING" == *"claude"* ]] && echo "  claude: https://docs.anthropic.com/en/docs/claude-code"
     echo ""
     echo "Install the missing dependencies and run this again."
@@ -71,6 +114,34 @@ mkdir -p "${CRM_ROOT}/outbox" && chmod 700 "${CRM_ROOT}/outbox"
 mkdir -p "${CRM_ROOT}/processed" && chmod 700 "${CRM_ROOT}/processed"
 mkdir -p "${CRM_ROOT}/inflight" && chmod 700 "${CRM_ROOT}/inflight"
 mkdir -p "${CRM_ROOT}/logs" && chmod 700 "${CRM_ROOT}/logs"
+
+# Windows: create inject directory and install node-pty
+if is_windows; then
+    mkdir -p "${CRM_ROOT}/inject" && chmod 700 "${CRM_ROOT}/inject"
+
+    echo "Installing node-pty (Windows PTY support)..."
+    PREV_DIR="$(pwd)"
+    cd "${CRM_ROOT}"
+    if [[ ! -d "node_modules/node-pty" ]]; then
+        npm init -y > /dev/null 2>&1
+        npm install node-pty 2>&1
+        if [[ $? -ne 0 ]]; then
+            echo ""
+            echo "WARNING: node-pty installation failed."
+            echo "  You may need to install it manually:"
+            echo "    cd ${CRM_ROOT} && npm install node-pty"
+            echo ""
+            echo "  If prebuilt binaries aren't available for your Node version,"
+            echo "  you'll need: npm install --global windows-build-tools"
+            echo ""
+        else
+            echo "  node-pty installed successfully."
+        fi
+    else
+        echo "  node-pty already installed."
+    fi
+    cd "${PREV_DIR}"
+fi
 
 # Initialize enabled-agents.json (empty - agents added via setup.sh)
 cat > "${CRM_ROOT}/config/enabled-agents.json" << 'EOF'

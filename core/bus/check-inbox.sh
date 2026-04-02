@@ -45,7 +45,8 @@ NOW_EPOCH=$(date +%s)
 STALE_THRESHOLD=300
 for inflight_file in "${INFLIGHT_DIR}"/*.json; do
     [[ ! -f "${inflight_file}" ]] && continue
-    FILE_MTIME=$(stat -f %m "${inflight_file}" 2>/dev/null || echo "${NOW_EPOCH}")
+    # GNU stat (Linux/Windows Git Bash) uses -c %Y, BSD stat (macOS) uses -f %m
+    FILE_MTIME=$(stat -c %Y "${inflight_file}" 2>/dev/null || stat -f %m "${inflight_file}" 2>/dev/null || echo "${NOW_EPOCH}")
     AGE=$(( NOW_EPOCH - FILE_MTIME ))
     if [[ ${AGE} -gt ${STALE_THRESHOLD} ]]; then
         BASENAME=$(basename "${inflight_file}")
@@ -55,14 +56,15 @@ done
 
 # Collect messages sorted by priority then timestamp
 MESSAGES=()
-for msg_file in $(ls -1 "${INBOX_DIR}"/*.json 2>/dev/null | sort); do
+while IFS= read -r msg_file || [[ -n "$msg_file" ]]; do
+    [[ -z "$msg_file" ]] && continue
     if jq empty "${msg_file}" 2>/dev/null; then
         MESSAGES+=("${msg_file}")
     else
         mkdir -p "${INBOX_DIR}/.errors"
         mv "${msg_file}" "${INBOX_DIR}/.errors/"
     fi
-done
+done < <(ls -1 "${INBOX_DIR}"/*.json 2>/dev/null | sort)
 
 if [[ ${#MESSAGES[@]} -eq 0 ]]; then
     echo "[]"

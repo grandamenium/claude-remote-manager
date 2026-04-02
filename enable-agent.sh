@@ -5,6 +5,7 @@
 set -euo pipefail
 
 TEMPLATE_ROOT="$(cd "$(dirname "$0")" && pwd)"
+source "${TEMPLATE_ROOT}/core/scripts/platform.sh"
 
 # Load instance ID
 REPO_ENV="${TEMPLATE_ROOT}/.env"
@@ -54,15 +55,26 @@ if [[ "${RESTART}" == "true" ]]; then
     # Reset crash counter
     rm -f "${CRM_ROOT}/logs/${AGENT}/.crash_count_today"
 
-    # Reload launchd
-    PLIST="${HOME}/Library/LaunchAgents/com.claude-remote.${CRM_INSTANCE_ID}.${AGENT}.plist"
-    if [[ -f "${PLIST}" ]]; then
-        launchctl unload "${PLIST}" 2>/dev/null || true
-        launchctl load "${PLIST}"
-        echo "${AGENT} restarted."
-    else
-        echo "No launchd plist found. Running full setup..."
-        "${TEMPLATE_ROOT}/core/scripts/generate-launchd.sh" "${AGENT}"
+    if is_macos; then
+        # Reload launchd
+        PLIST="${HOME}/Library/LaunchAgents/com.claude-remote.${CRM_INSTANCE_ID}.${AGENT}.plist"
+        if [[ -f "${PLIST}" ]]; then
+            launchctl unload "${PLIST}" 2>/dev/null || true
+            launchctl load "${PLIST}"
+            echo "${AGENT} restarted."
+        else
+            echo "No launchd plist found. Running full setup..."
+            "${TEMPLATE_ROOT}/core/scripts/generate-launchd.sh" "${AGENT}"
+        fi
+    elif is_windows; then
+        PM2_NAME="crm-${CRM_INSTANCE_ID}-${AGENT}"
+        if pm2 jlist 2>/dev/null | jq -e ".[] | select(.name == \"${PM2_NAME}\")" >/dev/null 2>&1; then
+            pm2 restart "${PM2_NAME}"
+            echo "${AGENT} restarted."
+        else
+            echo "No PM2 process found. Running full setup..."
+            "${TEMPLATE_ROOT}/core/scripts/generate-pm2.sh" "${AGENT}"
+        fi
     fi
     exit 0
 fi
@@ -85,10 +97,15 @@ mkdir -p "${CRM_ROOT}/processed/${AGENT}"
 mkdir -p "${CRM_ROOT}/inflight/${AGENT}"
 mkdir -p "${CRM_ROOT}/logs/${AGENT}"
 
-# Generate and load launchd plist
+# Generate and load service (platform-gated)
 echo ""
-echo "Setting up persistence with launchd..."
-"${TEMPLATE_ROOT}/core/scripts/generate-launchd.sh" "${AGENT}"
+if is_macos; then
+    echo "Setting up persistence with launchd..."
+    "${TEMPLATE_ROOT}/core/scripts/generate-launchd.sh" "${AGENT}"
+elif is_windows; then
+    echo "Setting up persistence with PM2..."
+    "${TEMPLATE_ROOT}/core/scripts/generate-pm2.sh" "${AGENT}"
+fi
 
 # Update enabled status
 jq ".\"${AGENT}\".enabled = true | .\"${AGENT}\".status = \"configured\"" "${ENABLED_FILE}" > "${ENABLED_FILE}.tmp"
@@ -99,8 +116,13 @@ echo "========================================="
 echo "  ${AGENT} is now LIVE"
 echo "========================================="
 echo ""
-echo "  launchd: loaded (auto-restarts on crash)"
-echo "  tmux: attach with: tmux attach -t crm-${CRM_INSTANCE_ID}-${AGENT}"
+if is_macos; then
+    echo "  launchd: loaded (auto-restarts on crash)"
+    echo "  tmux: attach with: tmux attach -t crm-${CRM_INSTANCE_ID}-${AGENT}"
+elif is_windows; then
+    echo "  PM2: running (auto-restarts on crash)"
+    echo "  Logs: pm2 logs crm-${CRM_INSTANCE_ID}-${AGENT}"
+fi
 echo ""
 echo "  Test it: Send a message to the agent's Telegram bot"
 echo ""

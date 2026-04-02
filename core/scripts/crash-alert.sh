@@ -9,6 +9,14 @@ set -uo pipefail  # No -e: best-effort alerting even if parts fail
 CRM_ROOT="${CRM_ROOT:-${HOME}/.claude-remote}"
 AGENT="${CRM_AGENT_NAME:-unknown}"
 TEMPLATE_ROOT="${CRM_TEMPLATE_ROOT:-$(cd "$(dirname "$0")/../.." && pwd)}"
+
+# Load platform detection
+if [[ -f "${TEMPLATE_ROOT}/core/scripts/platform.sh" ]]; then
+    source "${TEMPLATE_ROOT}/core/scripts/platform.sh"
+else
+    is_windows() { [[ "$OSTYPE" == "msys" || "$OSTYPE" == "cygwin" || "${OS:-}" == "Windows_NT" ]]; }
+    is_macos() { [[ "$OSTYPE" == "darwin"* ]]; }
+fi
 TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 LOG_DIR="${CRM_ROOT}/logs/${AGENT}"
 
@@ -32,8 +40,13 @@ if [[ -f "${CRASH_COUNT_FILE}" ]]; then
     fi
 fi
 
-# Build alert message
-MESSAGE="SESSION END: ${AGENT} exited at ${TIMESTAMP}. Crashes today: ${CRASH_COUNT}. launchd will respawn."
+# Build alert message (platform-gated respawn method)
+if is_windows; then
+    RESPAWN_METHOD="PM2"
+else
+    RESPAWN_METHOD="launchd"
+fi
+MESSAGE="SESSION END: ${AGENT} exited at ${TIMESTAMP}. Crashes today: ${CRASH_COUNT}. ${RESPAWN_METHOD} will respawn."
 
 # Send alert to the agent's Telegram chat
 ENV_FILE="${TEMPLATE_ROOT}/agents/${AGENT}/.env"

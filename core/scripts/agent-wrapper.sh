@@ -19,6 +19,9 @@ set -euo pipefail
 AGENT="$1"
 TEMPLATE_ROOT="$2"
 
+# Load platform detection
+source "${TEMPLATE_ROOT}/core/scripts/platform.sh"
+
 # Load instance ID from repo .env or environment
 REPO_ENV="${TEMPLATE_ROOT}/.env"
 if [[ -f "${REPO_ENV}" ]]; then
@@ -199,6 +202,29 @@ if [[ -n "${BOT_TOKEN:-}" ]]; then
     fi
 fi
 
+# --- Windows: delegate to Node.js wrapper ---
+if is_windows; then
+    # On Windows, the Node.js wrapper handles everything:
+    # - Spawning Claude in a real PTY via node-pty (ConPTY)
+    # - Message injection via typed IPC command files
+    # - Process lifecycle, crash detection, restart cycle
+    # - Fast-checker is started by the wrapper
+    WRAPPER_JS="${TEMPLATE_ROOT}/core/scripts/win-agent-wrapper.js"
+    if [[ ! -f "${WRAPPER_JS}" ]]; then
+        echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) ERROR: win-agent-wrapper.js not found at ${WRAPPER_JS}" >&2
+        exit 1
+    fi
+
+    # Pass all context via environment (already exported above)
+    # Set NODE_PATH so require('node-pty') resolves from CRM_ROOT/node_modules
+    # even when cwd is the agent's working_directory (Cora review fix)
+    export NODE_PATH="${CRM_ROOT}/node_modules:${TEMPLATE_ROOT}/node_modules:${NODE_PATH:-}"
+    exec node "${WRAPPER_JS}" "${AGENT}" "${TEMPLATE_ROOT}"
+    # exec replaces this process — nothing below runs on Windows
+fi
+
+# --- macOS: tmux + launchd path (unchanged) ---
+
 # Prevent Mac from sleeping while agent runs
 caffeinate -is -w $$ &
 
@@ -228,9 +254,10 @@ $(cat "${lf}")
 fi
 
 # Serialize EXTRA_FLAGS for use in generated scripts and tmux commands
+# Use printf %q for proper shell escaping (handles quotes, spaces, special chars)
 EXTRA_FLAGS_STR=""
 for flag in "${EXTRA_FLAGS[@]+"${EXTRA_FLAGS[@]}"}"; do
-    EXTRA_FLAGS_STR+=" '${flag}'"
+    EXTRA_FLAGS_STR+=" $(printf '%q' "${flag}")"
 done
 
 # Build the initial launch command based on start mode
@@ -280,9 +307,27 @@ graceful_shutdown() {
 trap graceful_shutdown SIGTERM SIGINT
 
 # Background timer: restart Claude CLI with --continue after MAX_SESSION seconds
+# Sends a 5-minute warning first so Claude can finish current work and save state
+RESTART_WARNING=300
 (
     while true; do
-        sleep ${MAX_SESSION}
+        # Sleep until 5 minutes before restart
+        WARN_SLEEP=$((MAX_SESSION - RESTART_WARNING))
+        if [[ ${WARN_SLEEP} -gt 0 ]]; then
+            sleep ${WARN_SLEEP}
+        else
+            sleep ${MAX_SESSION}
+        fi
+
+        # Send 5-minute warning
+        if tmux has-session -t "${TMUX_SESSION}" 2>/dev/null; then
+            tmux send-keys -t "${TMUX_SESSION}:0.0" \
+                "SESSION RESTART in 5 minutes. Finish your current task, save your work, and report your status to the user via Telegram. Your conversation history will be preserved." Enter
+            echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) SESSION_REFRESH warning sent, restart in ${RESTART_WARNING}s agent=${AGENT}" >> "${LOG_DIR}/activity.log"
+        fi
+
+        # Wait 5 minutes then restart
+        sleep ${RESTART_WARNING}
         echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) SESSION_REFRESH after ${MAX_SESSION}s agent=${AGENT}" >> "${CRASH_LOG}"
 
         if tmux has-session -t "${TMUX_SESSION}" 2>/dev/null; then
