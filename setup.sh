@@ -4,17 +4,32 @@
 
 set -euo pipefail
 
-# Dependency checks
+# Load platform detection
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+source "${SCRIPT_DIR}/core/scripts/platform.sh"
+
+# Dependency checks (platform-gated)
 MISSING=""
-command -v tmux >/dev/null 2>&1 || MISSING="${MISSING} tmux"
+if is_macos; then
+    command -v tmux >/dev/null 2>&1 || MISSING="${MISSING} tmux"
+elif is_windows; then
+    command -v node >/dev/null 2>&1 || MISSING="${MISSING} node"
+    command -v pm2 >/dev/null 2>&1 || MISSING="${MISSING} pm2"
+fi
 command -v jq >/dev/null 2>&1 || MISSING="${MISSING} jq"
 command -v claude >/dev/null 2>&1 || MISSING="${MISSING} claude"
 
 if [[ -n "$MISSING" ]]; then
     echo "ERROR: Missing required dependencies:${MISSING}"
     echo ""
-    [[ "$MISSING" == *"tmux"* ]] && echo "  tmux:   brew install tmux"
-    [[ "$MISSING" == *"jq"* ]] && echo "  jq:     brew install jq"
+    if is_macos; then
+        [[ "$MISSING" == *"tmux"* ]] && echo "  tmux:   brew install tmux"
+        [[ "$MISSING" == *"jq"* ]] && echo "  jq:     brew install jq"
+    elif is_windows; then
+        [[ "$MISSING" == *"node"* ]] && echo "  node:   https://nodejs.org/ (v18+ required)"
+        [[ "$MISSING" == *"pm2"* ]] && echo "  pm2:    npm install -g pm2"
+        [[ "$MISSING" == *"jq"* ]] && echo "  jq:     included with Git for Windows, or: https://jqlang.github.io/jq/"
+    fi
     [[ "$MISSING" == *"claude"* ]] && echo "  claude: https://docs.anthropic.com/en/docs/claude-code"
     echo ""
     echo "Install the missing dependencies and run this again."
@@ -140,15 +155,22 @@ chmod +x "${TEMPLATE_ROOT}/"*.sh 2>/dev/null || true
 chmod +x "${TEMPLATE_ROOT}/core/scripts/"*.sh 2>/dev/null || true
 chmod +x "${TEMPLATE_ROOT}/core/bus/"*.sh 2>/dev/null || true
 
-# Generate launchd plist
+# Generate service configuration (platform-gated)
 echo ""
-echo "Generating launchd service..."
-"${TEMPLATE_ROOT}/core/scripts/generate-launchd.sh" "${AGENT_NAME}"
+if is_macos; then
+    echo "Generating launchd service..."
+    "${TEMPLATE_ROOT}/core/scripts/generate-launchd.sh" "${AGENT_NAME}"
+elif is_windows; then
+    echo "Generating PM2 service..."
+    "${TEMPLATE_ROOT}/core/scripts/generate-pm2.sh" "${AGENT_NAME}"
+fi
 
 # Update enabled-agents.json
 ENABLED_FILE="${CRM_ROOT}/config/enabled-agents.json"
 jq ".\"${AGENT_NAME}\".enabled = true | .\"${AGENT_NAME}\".status = \"configured\"" "${ENABLED_FILE}" > "${ENABLED_FILE}.tmp"
 mv "${ENABLED_FILE}.tmp" "${ENABLED_FILE}"
+
+PM2_NAME="crm-${CRM_INSTANCE_ID}-${AGENT_NAME}"
 
 echo ""
 echo "========================================="
@@ -157,14 +179,26 @@ echo "========================================="
 echo ""
 echo "  Agent:   ${AGENT_NAME}"
 echo "  Dir:     ${AGENT_DIR}"
-echo "  tmux:    tmux attach -t crm-${CRM_INSTANCE_ID}-${AGENT_NAME}"
+if is_macos; then
+    echo "  tmux:    tmux attach -t ${PM2_NAME}"
+elif is_windows; then
+    echo "  PM2:     pm2 logs ${PM2_NAME}"
+fi
 echo "  Logs:    ${CRM_ROOT}/logs/${AGENT_NAME}/"
 echo ""
 echo "  NOTE: Claude Code may prompt you to trust this directory on first boot."
-echo "  If your agent doesn't come online, attach to the tmux session to approve:"
-echo ""
-echo "    tmux attach -t crm-${CRM_INSTANCE_ID}-${AGENT_NAME}"
-echo ""
-echo "  Approve the trust prompt, then detach with Ctrl-b d."
+if is_macos; then
+    echo "  If your agent doesn't come online, attach to the tmux session to approve:"
+    echo ""
+    echo "    tmux attach -t ${PM2_NAME}"
+    echo ""
+    echo "  Approve the trust prompt, then detach with Ctrl-b d."
+elif is_windows; then
+    echo "  If your agent doesn't come online, check PM2 logs:"
+    echo ""
+    echo "    pm2 logs ${PM2_NAME}"
+    echo ""
+    echo "  You may need to run 'claude' manually once to accept terms."
+fi
 echo "  After that, message your Telegram bot to start."
 echo ""

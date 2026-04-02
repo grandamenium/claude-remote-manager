@@ -4,6 +4,9 @@ agents/*/local/
 agents/*/telegram-images/
 *.log
 .DS_Store
+.test/
+.state/
+node_modules/
 
 # Keep agent-template config (needed for distribution)
 !agents/agent-template/.claude/
