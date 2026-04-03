@@ -12,3 +12,17 @@ agents/*/telegram-images/
 # Exclude live agent configs (contain user-specific data)
 agents/*/memory/
 agents/jimbo/
+
+# MCP configs (contain bot tokens and user-specific paths)
+agents/*/.claude.json
+agents/*/.claude/
+
+# Runtime and tool state
+.serena/
+state/
+agents/*/.playwright-mcp/
+
+# Screenshots and client data (user-specific)
+agents/*/*.png
+agents/*/telegram-docs/
+agents/*/ocg_*.txt

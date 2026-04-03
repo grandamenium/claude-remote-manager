@@ -157,8 +157,15 @@ fi
 # Prompts - two distinct variants based on start mode
 RESTART_NOTIFY="After setting up crons, send a Telegram message to the user saying you are back online, what session this is, and what you are about to work on."
 
+# Check for handoff file from previous session (Fix 5: Graceful Context Handoff)
+HANDOFF_FILE="${CRM_ROOT}/state/${AGENT}.handoff.md"
+HANDOFF_INSTRUCTION=""
+if [[ -f "${HANDOFF_FILE}" ]]; then
+    HANDOFF_INSTRUCTION=" IMPORTANT: Read ${HANDOFF_FILE} for context from your previous session, then delete it after reading."
+fi
+
 # STARTUP_PROMPT: used for fresh starts (hard-restart or first-ever launch)
-STARTUP_PROMPT="You are starting a new session. Read all bootstrap files listed in CLAUDE.md. Then read config.json and set up your crons using /loop for each entry in the crons array. ${RESTART_NOTIFY}"
+STARTUP_PROMPT="You are starting a new session. Read all bootstrap files listed in CLAUDE.md. Then read config.json and set up your crons using /loop for each entry in the crons array.${HANDOFF_INSTRUCTION} ${RESTART_NOTIFY}"
 
 # CONTINUE_PROMPT: used when resuming via --continue (timer refresh or self-restart)
 CONTINUE_PROMPT="SESSION CONTINUATION: Your CLI process was restarted with --continue to reload configs. Your full conversation history is preserved. Do the following immediately: 1) Re-read ALL bootstrap files listed in CLAUDE.md. 2) Set up your crons from config.json using /loop (they were lost when the CLI restarted). 3) Check inbox. 4) Resume normal operations. ${RESTART_NOTIFY}"
@@ -298,11 +305,15 @@ trap graceful_shutdown SIGTERM SIGINT
             fi
 
             # Kill old fast-checker and start fresh one
+            # Remove PID lock so the new instance can acquire it
+            rm -f "${CRM_ROOT}/state/${AGENT}.fast-checker.pid"
+            rm -rf "${CRM_ROOT}/state/${AGENT}.fast-checker.lock"
             pkill -f "fast-checker.sh ${AGENT} " 2>/dev/null || true
             sleep 1
             if [[ -f "${TEMPLATE_ROOT}/core/scripts/fast-checker.sh" ]]; then
                 bash "${TEMPLATE_ROOT}/core/scripts/fast-checker.sh" "${AGENT}" "${TMUX_SESSION}" "${AGENT_DIR}" "${TEMPLATE_ROOT}" \
                     >> "${LOG_DIR}/fast-checker.log" 2>&1 &
+                FAST_PID=$!
             fi
 
             tmux send-keys -t "${TMUX_SESSION}:0.0" \
@@ -317,6 +328,7 @@ trap graceful_shutdown SIGTERM SIGINT
 TIMER_PID=$!
 
 # Kill any stale fast-checker for this agent before starting a fresh one.
+rm -f "${CRM_ROOT}/state/${AGENT}.fast-checker.pid"
 pkill -f "fast-checker.sh ${AGENT} " 2>/dev/null || true
 
 # Start fast message checker (Telegram + inbox polling every 3s)
@@ -330,9 +342,26 @@ fi
 
 # Wait for the tmux session to end
 while tmux has-session -t "${TMUX_SESSION}" 2>/dev/null; do
-    # Watchdog: restart fast-checker if it died unexpectedly
-    if [[ -n "${FAST_PID:-}" ]] && ! kill -0 "${FAST_PID}" 2>/dev/null; then
-        echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) fast-checker died (pid ${FAST_PID}), restarting" >> "${LOG_DIR}/fast-checker.log"
+    # Watchdog: restart fast-checker if no healthy instance is running
+    # Check PID file first (authoritative), fall back to FAST_PID
+    FC_PIDFILE="${CRM_ROOT}/state/${AGENT}.fast-checker.pid"
+    FC_ALIVE=false
+    if [[ -f "$FC_PIDFILE" ]]; then
+        FC_PID_FROM_FILE=$(cat "$FC_PIDFILE" 2>/dev/null || echo "")
+        if [[ -n "$FC_PID_FROM_FILE" ]] && kill -0 "$FC_PID_FROM_FILE" 2>/dev/null; then
+            FC_ALIVE=true
+        fi
+    fi
+    if [[ "$FC_ALIVE" == "false" ]]; then
+        # Double-check with FAST_PID in case PID file wasn't written yet
+        if [[ -n "${FAST_PID:-}" ]] && kill -0 "${FAST_PID}" 2>/dev/null; then
+            FC_ALIVE=true
+        fi
+    fi
+    if [[ "$FC_ALIVE" == "false" ]]; then
+        echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) fast-checker died, restarting" >> "${LOG_DIR}/fast-checker.log"
+        rm -f "$FC_PIDFILE"
+        rm -rf "${CRM_ROOT}/state/${AGENT}.fast-checker.lock"
         bash "${FAST_CHECKER}" "${AGENT}" "${TMUX_SESSION}" "${AGENT_DIR}" "${TEMPLATE_ROOT}" \
             >> "${LOG_DIR}/fast-checker.log" 2>&1 &
         FAST_PID=$!
@@ -346,6 +375,13 @@ EXIT_CODE=0
 kill ${TIMER_PID} 2>/dev/null || true
 
 # Kill fast checker alongside session
+FC_PIDFILE="${CRM_ROOT}/state/${AGENT}.fast-checker.pid"
+if [[ -f "$FC_PIDFILE" ]]; then
+    FC_KILL_PID=$(cat "$FC_PIDFILE" 2>/dev/null || echo "")
+    [[ -n "$FC_KILL_PID" ]] && kill "$FC_KILL_PID" 2>/dev/null || true
+    rm -f "$FC_PIDFILE"
+    rm -rf "${CRM_ROOT}/state/${AGENT}.fast-checker.lock"
+fi
 if [[ -n "${FAST_PID:-}" ]]; then
     kill "${FAST_PID}" 2>/dev/null || true
 fi

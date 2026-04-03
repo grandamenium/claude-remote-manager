@@ -1,0 +1,19 @@
+{
+  "agent_name": "sentinel",
+  "enabled": true,
+  "startup_delay": 5,
+  "max_session_seconds": 255600,
+  "crons": [
+    {
+      "name": "contract-expiry",
+      "schedule": "7 9 * * 1",
+      "prompt": "Contract Expiry Check: Monday 9 AM. Scan ~/code/knowledge-sync/resources/reference/clearworks/ for contracts with expiry dates. Alert on anything expiring within 90 days. Send to Josh via Telegram (6690120787)."
+    },
+    {
+      "name": "compliance-review",
+      "schedule": "3 10 * * 3",
+      "prompt": "Compliance Review: Wednesday 10 AM. Check active client engagements for missing compliance docs (NDAs, DPAs, SOWs). Flag any gaps. Send to Josh via Telegram (6690120787) if action needed."
+    }
+  ],
+  "model": "claude-sonnet-4-6"
+}

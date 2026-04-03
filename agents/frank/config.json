@@ -1,0 +1,56 @@
+{
+  "agent_name": "frank",
+  "enabled": true,
+  "startup_delay": 0,
+  "max_session_seconds": 255600,
+  "context_max_hours": 16,
+  "context_max_injections": 150,
+  "crons": [
+    {
+      "name": "heartbeat",
+      "interval": "15m",
+      "prompt": "HEARTBEAT — Dispatch to a Haiku subagent: Use the Agent tool with model:haiku to run these checks: (1) date in PST, (2) 'launchctl list | grep claude-remote' — report any agent with exit code != 0 or PID '-' as DEAD, (3) git log --oneline -3 for ~/code/clearpath, ~/code/lifecycle-killer, ~/code/nonprofit-hub. The subagent should return a short status report. Then YOU (Frank) handle the results: if any agent is dead, run 'bash ../../enable-agent.sh <name> --restart' and alert Josh via Telegram 6690120787. Otherwise just log HEARTBEAT_OK — do NOT send Telegram for routine heartbeats."
+    },
+    {
+      "name": "comms-check",
+      "interval": "15m",
+      "prompt": "COMMS CHECK — Dispatch to a Haiku subagent: Use the Agent tool with model:haiku to check all communication channels:\n\n1. EMAIL — AP invoices: mcp__google-workspace__search_gmail_messages query='to:ap@clearworks.ai newer_than:1d' user_google_email='josh@clearworks.ai'. For results, get content via get_gmail_messages_content_batch.\n2. EMAIL — Josh inbox: mcp__google-workspace__search_gmail_messages query='is:unread newer_than:1h -category:promotions -category:social -category:updates' user_google_email='josh@clearworks.ai'. For results, get content.\n3. iMESSAGE — Check recent texts (last 30 min) using the imessage plugin tools. Return sender, preview, timestamp for any new messages.\n\nSubagent returns all findings. Then YOU (Frank) handle results:\n- AP invoices: send Telegram to 6690120787 with sender, subject, amount, payment link.\n- Railway failures: pull logs immediately, diagnose and fix. Only alert Josh if production is DOWN or you've exhausted solutions.\n- Important human emails: alert via Telegram if urgent, otherwise queue for next briefing.\n- iMessages from known contacts: note for CRM sync. Important/urgent texts: alert Josh via Telegram.\n- Nothing new: log COMMS_OK silently — do NOT send Telegram."
+    },
+    {
+      "name": "outreach-check",
+      "schedule": "2 10 * * 1,3,5",
+      "prompt": "OUTREACH CHECK — Dispatch to a Haiku subagent: Use the Agent tool with model:haiku to: (1) Read ~/code/knowledge-sync/tasks/clearworks/active.md Sales section ONLY — ignore Client Delivery items. (2) Cross-reference: list client folders with 'ls ~/code/knowledge-sync/areas/clearworks/clients/' — if a deal name matches an existing client folder, it's an active project NOT a prospect, skip it. (3) Check Gmail for recent responses from prospects (search_gmail_messages for each prospect name, last 7 days). (4) Check inbox (bash ../../core/bus/check-inbox.sh). Only flag TRUE sales prospects that are stale or need action. Subagent returns summary. Then YOU send it to Josh via Telegram (6690120787). Under 5 bullets."
+    },
+    {
+      "name": "client-health",
+      "schedule": "4 9 * * 3",
+      "prompt": "CLIENT HEALTH — Dispatch to a Haiku subagent: Use the Agent tool with model:haiku to scan ~/code/knowledge-sync/areas/clearworks/clients/ and ~/code/knowledge-sync/tasks/clearworks/active.md Client Delivery section. Flag >14 days no contact, stalled deliverables, overdue items. Subagent returns findings. Then YOU send to Josh via Telegram (6690120787)."
+    },
+    {
+      "name": "pipeline-review",
+      "schedule": "3 15 * * 4",
+      "prompt": "PIPELINE REVIEW — Dispatch to a Sonnet subagent: Use the Agent tool with model:sonnet for full sales pipeline analysis. Tell it to read ~/code/knowledge-sync/tasks/clearworks/active.md Sales section. Summarize: active deals by stage, next actions, revenue at risk, wins. Subagent returns analysis. Then YOU send to Josh via Telegram (6690120787)."
+    },
+    {
+      "name": "forgot-anything",
+      "schedule": "7 11 * * 5",
+      "prompt": "FORGOT ANYTHING — Dispatch to a Sonnet subagent: Use the Agent tool with model:sonnet to scan the week for dropped threads. Tell it to read daily notes (~/code/knowledge-sync/daily/ Mon-Fri this week), check ~/code/knowledge-sync/tasks/clearworks/active.md and tasks/personal/active.md for stale items, check inbox (bash ../../core/bus/check-inbox.sh). Subagent returns findings. Then YOU send to Josh via Telegram (6690120787). If nothing dropped, say so."
+    },
+    {
+      "name": "weekly-cleanup",
+      "schedule": "3 10 * * 0",
+      "prompt": "WEEKLY CLEANUP — Dispatch to a Sonnet subagent: Use the Agent tool with model:sonnet to: (1) Read ~/code/knowledge-sync/tasks/clearworks/active.md and tasks/personal/active.md. (2) Flag stale items (>7 days no update, no waiting-on reason). (3) Check milestones approaching this week. (4) Query Todoist API for task status sync. Subagent returns findings and recommended edits. Then YOU make the edits, send summary to Josh via Telegram (6690120787)."
+    },
+    {
+      "name": "milestone-check",
+      "schedule": "5 8 * * 1-5",
+      "prompt": "MILESTONE CHECK — Dispatch to a Haiku subagent: Use the Agent tool with model:haiku to read ~/code/knowledge-sync/tasks/personal/active.md recurring section and milestones. Check if anything is due today or tomorrow: George topical (Mondays), Havasupai prep milestones, batch cook (Sun+Wed), meeting deadlines. Subagent returns due items. Then YOU send a short Telegram reminder to 6690120787 ONLY if something is actually due. If nothing due, skip silently."
+    },
+    {
+      "name": "weekly-synthesis",
+      "schedule": "3 16 * * 5",
+      "prompt": "WEEKLY SYNTHESIS — Dispatch to a Sonnet subagent: Use the Agent tool with model:sonnet to read this week's daily notes (~/code/knowledge-sync/daily/YYYY-MM-DD.md for Mon-Fri), session files (~/code/knowledge-sync/cc/sessions/ from this week), git log --oneline -20 across ~/code/clearpath + ~/code/lifecycle-killer + ~/code/nonprofit-hub. Subagent produces a synthesis. Then YOU write it to ~/code/knowledge-sync/cc/synthesis/week-of-YYYY-MM-DD.md and extract any durable facts to save as memory files."
+    }
+  ],
+  "model": "claude-opus-4-6"
+}

@@ -1,0 +1,29 @@
+{
+  "agent_name": "muse",
+  "enabled": true,
+  "startup_delay": 5,
+  "max_session_seconds": 255600,
+  "crons": [
+    {
+      "name": "linkedin-draft",
+      "schedule": "3 9 * * 1",
+      "prompt": "LinkedIn Draft: Monday 9 AM. Draft 1 LinkedIn post for the week. Pull from Clearpath Grow seeds (curl $CLEARPATH_BASE_URL/api/grow/seeds -H 'X-Api-Key: $CLEARPATH_API_KEY'), recent wins from daily notes. Read voice.md before writing. Josh's voice: concrete to abstract, dollars first, peer-to-peer, no buzzwords. Send draft to Josh via Telegram (6690120787) for approval."
+    },
+    {
+      "name": "newsletter-draft",
+      "schedule": "4 10 * * 3",
+      "prompt": "Newsletter Draft: Wednesday 10 AM. Draft weekly newsletter section. Format: personal story hook + insight + consuming section (book/tool/podcast Josh used this week). Pull from daily notes and Clearpath content pipeline. Read voice.md. Send draft to Josh via Telegram (6690120787)."
+    },
+    {
+      "name": "content-performance",
+      "schedule": "7 15 * * 5",
+      "prompt": "Content Performance: Friday 3 PM. Check Clearpath marketing content digest (curl $CLEARPATH_BASE_URL/api/marketing/content-digest -H 'X-Api-Key: $CLEARPATH_API_KEY'). Review what content went out this week, engagement signals. Send brief performance summary to Josh via Telegram (6690120787)."
+    },
+    {
+      "name": "content-calendar",
+      "schedule": "5 17 * * 0",
+      "prompt": "Content Calendar: Sunday 5 PM. Plan next week's content. Check Clearpath Grow seeds for unused hooks. Review knowledge-sync daily notes for story ideas. Propose: 1 LinkedIn post topic, 1 newsletter angle, any blog/SEO opportunities. Send plan to Josh via Telegram (6690120787)."
+    }
+  ],
+  "model": "claude-sonnet-4-6"
+}

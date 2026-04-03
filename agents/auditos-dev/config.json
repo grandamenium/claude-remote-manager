@@ -1,0 +1,10 @@
+{
+  "agent_name": "auditos-dev",
+  "enabled": true,
+  "startup_delay": 5,
+  "max_session_seconds": 255600,
+  "context_max_hours": 16,
+  "context_max_injections": 150,
+  "crons": [],
+  "model": "claude-opus-4-6"
+}

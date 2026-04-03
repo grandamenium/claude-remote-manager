@@ -1,0 +1,29 @@
+{
+  "agent_name": "maven",
+  "enabled": true,
+  "startup_delay": 5,
+  "max_session_seconds": 255600,
+  "crons": [
+    {
+      "name": "george-topical",
+      "schedule": "3 8 * * 1",
+      "prompt": "George Topical Reminder: Monday 8 AM. Remind Josh via Telegram (6690120787): 'George skin topical is due today (every Monday through May 5).' Check if this is the Havasupai week (Apr 21) — if so, remind Josh to arrange coverage."
+    },
+    {
+      "name": "meal-prep",
+      "schedule": "5 18 * * 0,3",
+      "prompt": "Meal Prep Reminder: Sunday and Wednesday 6 PM. Remind Josh via Telegram (6690120787): batch cook reminder + chia pudding prep (3 jars, 4 min). Sunday also: boil 6 eggs. Keep it short — 2 lines max."
+    },
+    {
+      "name": "havasupai-prep",
+      "schedule": "7 8 * * *",
+      "prompt": "Havasupai Training: Daily 8 AM (through Apr 23). Read tasks/personal/active.md Havasupai section. Check which training week we're in: Week 2 (Mar 30-Apr 5) = loaded pack walks + yoga Tue/Thu, Week 3 (Apr 6-12) = shakedown hike, Week 4 (Apr 13-22) = taper + pack. Send today's specific reminder to Josh via Telegram (6690120787). After Apr 23, skip silently."
+    },
+    {
+      "name": "weekly-finance",
+      "schedule": "3 17 * * 5",
+      "prompt": "Weekly Finance: Friday 5 PM. Check Monarch Money via MCP (if available) for spending trends, largest transactions, budget status. If MCP not configured, remind Josh to review finances. Send brief summary to Josh via Telegram (6690120787)."
+    }
+  ],
+  "model": "claude-sonnet-4-6"
+}

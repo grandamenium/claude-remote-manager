@@ -1,124 +1,28 @@
 # Claude Remote Agent
 
-Persistent 24/7 Claude Code agent controlled via Telegram. Runs in tmux, managed by launchd, with auto-restart and crash recovery.
+Persistent 24/7 Claude Code agent controlled via Telegram. Runs in tmux, managed by launchd.
+
+## Narration (MANDATORY)
+
+Send italic Telegram progress updates every 2-3 tool calls while working on ANY task. This applies to all work — user requests, cron jobs, autonomous tasks. Use `_italics_` via send-telegram.sh. Example: `_Reading config... found 3 stale entries._` Silence = failure. If Josh has to check on you, you already failed.
 
 ## On Session Start
 
-1. Read this file and `config.json`
-2. Set up crons from `config.json` via `/loop` (check CronList first - no duplicates)
-3. Notify user on Telegram that you're online
-
----
-
-## Telegram Messages
-
-Messages arrive in real time via the fast-checker daemon:
-
-```
-=== TELEGRAM from <name> (chat_id:<id>) ===
-<text>
-Reply using: bash ../../core/bus/send-telegram.sh <chat_id> "<reply>"
-```
-
-Photos include a `local_file:` path. Callbacks include `callback_data:` and `message_id:`. Process all immediately and reply using the command shown.
-
-**Telegram formatting:** send-telegram.sh uses Telegram's regular Markdown (not MarkdownV2). Do NOT escape characters like `!`, `.`, `(`, `)`, `-` with backslashes. Just write plain natural text. Only `_`, `*`, `` ` ``, and `[` have special meaning.
-
----
-
-## Agent-to-Agent Messages
-
-```
-=== AGENT MESSAGE from <agent> [msg_id: <id>] ===
-<text>
-Reply using: bash ../../core/bus/send-message.sh <agent> normal '<reply>' <msg_id>
-```
-
-Always include `msg_id` as reply_to (auto-ACKs the original). Un-ACK'd messages redeliver after 5 min. For no-reply messages: `bash ../../core/bus/ack-inbox.sh <msg_id>`
-
----
-
-## Crons
-
-Defined in `config.json` under `crons` array. Set up once per session via `/loop`.
-
-**Add:** Create `/loop {interval} {prompt}`, then add to `config.json`
-**Remove:** Cancel the `/loop`, remove from `config.json`
-**Format:** `{"name": "...", "interval": "5m", "prompt": "..."}`
-
-Crons expire after 3 days but are recreated from config on each restart.
-
----
-
-## Restart
-
-**Soft** (preserves history): `bash ../../core/bus/self-restart.sh --reason "why"`
-**Hard** (fresh session): `bash ../../core/bus/hard-restart.sh --reason "why"`
-
-When the user asks to restart, ALWAYS ask them first: "Fresh restart or continue with conversation history?" Do NOT restart until they specify which type.
-
-Sessions auto-restart with `--continue` every ~71 hours. On context exhaustion, notify user via Telegram then hard-restart.
-
----
+1. Read this file, `config.json`, and `../../core/AGENT-OPS.md` (shared agent ops reference)
+2. Set up crons from `config.json` via `/loop` (check CronList first)
+3. Read latest handoff: `ls -t ~/code/knowledge-sync/cc/sessions/AGENT_NAME-handoff-*.md 2>/dev/null | head -1`
+4. Resume any pending work from handoff
+5. Notify user on Telegram that you're online + what you're resuming
 
 ## Spawning a New Agent
 
-1. Ask user to create a bot with @BotFather on Telegram, send you the token
-2. Ask user to message the new bot, then get chat_id:
-   ```bash
-   curl -s "https://api.telegram.org/bot<TOKEN>/getUpdates" | jq '.result[-1].message.chat.id'
-   ```
-3. Create the agent:
-   ```bash
-   cp -r ../../agents/agent-template ../../agents/<name>
-   cat > ../../agents/<name>/.env << EOF
-   BOT_TOKEN=<token>
-   CHAT_ID=<chat_id>
-   EOF
-   ```
-4. Enable it: `bash ../../enable-agent.sh <name>`
+1. Create bot with @BotFather on Telegram, get token
+2. Message the bot, get chat_id: `curl -s "https://api.telegram.org/bot<TOKEN>/getUpdates" | jq '.result[-1].message.chat.id'`
+3. Create agent: `cp -r ../../agents/agent-template ../../agents/<name>` then write `.env` with BOT_TOKEN and CHAT_ID
+4. Enable: `bash ../../enable-agent.sh <name>`
 
-The new agent will boot, read its CLAUDE.md, and come online.
+## Reference Files
 
----
-
-## System Management
-
-### Agent Lifecycle
-| Action | Command |
-|--------|---------|
-| Enable agent | `bash ../../enable-agent.sh <name>` |
-| Disable agent | `bash ../../disable-agent.sh <name>` |
-| Check services | `launchctl list \| grep claude-remote` |
-| View tmux session | `tmux attach -t crm-default-<name>` |
-| List tmux sessions | `tmux ls \| grep crm` |
-
-### Communication
-| Action | Command |
-|--------|---------|
-| Send Telegram | `bash ../../core/bus/send-telegram.sh <chat_id> "<msg>"` |
-| Send photo | `bash ../../core/bus/send-telegram.sh <chat_id> "<caption>" --image /path` |
-| Send to agent | `bash ../../core/bus/send-message.sh <agent> <priority> '<msg>' [reply_to]` |
-| Check inbox | `bash ../../core/bus/check-inbox.sh` |
-| ACK message | `bash ../../core/bus/ack-inbox.sh <msg_id>` |
-
-### Logs
-| Log | Path |
-|-----|------|
-| Activity | `~/.claude-remote/{instance}/logs/{agent}/activity.log` |
-| Fast-checker | `~/.claude-remote/{instance}/logs/{agent}/fast-checker.log` |
-| Stdout | `~/.claude-remote/{instance}/logs/{agent}/stdout.log` |
-| Stderr | `~/.claude-remote/{instance}/logs/{agent}/stderr.log` |
-
-### State
-| File | Purpose |
-|------|---------|
-| `config.json` | Crons, max_session_seconds, agent config |
-| `.env` | BOT_TOKEN, CHAT_ID, ALLOWED_USER |
-
----
-
-## Skills
-
-- **skills/comms/** - Message handling reference (Telegram + agent inbox formats)
-- **skills/cron-management/** - Cron setup, persistence, and troubleshooting
+- `../../core/AGENT-OPS.md` — Shared ops: live progress, comms, handoff protocol, restart, system management
+- `skills/comms/` — Message handling reference
+- `skills/cron-management/` — Cron setup and troubleshooting

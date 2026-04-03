@@ -1,0 +1,29 @@
+{
+  "agent_name": "sre-agent",
+  "enabled": true,
+  "startup_delay": 10,
+  "max_session_seconds": 255600,
+  "crons": [
+    {
+      "name": "security-scan",
+      "schedule": "7 6 * * *",
+      "prompt": "Security Scan: Daily 6 AM. For each repo (clearpath, lifecycle-killer, nonprofit-hub): (1) Check npm audit for critical/high vulnerabilities. (2) Scan for hardcoded secrets or API keys in recent commits (git log -10 + grep). (3) Check .env files are gitignored. (4) Verify no new endpoints without auth middleware. Report findings to Josh via Telegram. If critical: alert immediately. If clean: silent."
+    },
+    {
+      "name": "uptime-check",
+      "interval": "30m",
+      "prompt": "Uptime Check: Every 30 min. Curl each production URL and check for 200 response: clearpath-production-c86d.up.railway.app, lifecycle-killer-production.up.railway.app, nonprofit-hub-production.up.railway.app. If any returns non-200 or times out (>10s), alert Josh via Telegram immediately with the failing service and status code. Otherwise UPTIME_OK."
+    },
+    {
+      "name": "performance-check",
+      "schedule": "3 9 * * 1-5",
+      "prompt": "Performance Check: Weekday 9 AM. For each production app: (1) Curl 3 key endpoints and measure response times. (2) Check Railway logs for error rate spikes in last 24h. (3) Check for memory/CPU warnings. Report only if issues found. If all healthy: silent."
+    },
+    {
+      "name": "dependency-audit",
+      "schedule": "4 10 * * 1",
+      "prompt": "Dependency Audit: Monday 10 AM. For each repo: run npm outdated, flag major version bumps and security-related updates. Check if any dependencies have been deprecated. Send summary to Josh via Telegram only if action needed."
+    }
+  ],
+  "model": "claude-haiku-4-5-20251001"
+}

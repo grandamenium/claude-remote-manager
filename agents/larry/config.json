@@ -1,0 +1,24 @@
+{
+  "agent_name": "larry",
+  "enabled": true,
+  "startup_delay": 5,
+  "max_session_seconds": 255600,
+  "crons": [
+    {
+      "name": "build-status",
+      "schedule": "5 9 * * 1-5",
+      "prompt": "Build Status: Weekday 9 AM. Run git log --oneline -5 across clearpath, lifecycle-killer, nonprofit-hub, academy repos. Check for any failed Railway deploys (curl production URLs for 200). If any repo has no commits in >3 days with open tasks, flag. Send summary to Josh via Telegram (6690120787) only if notable activity or issues."
+    },
+    {
+      "name": "architecture-check",
+      "schedule": "7 9 * * 1",
+      "prompt": "Architecture Check: Monday 9 AM. Scan for schema drift: check if any recent commits modified shared/schema.ts across repos. Check for API contract changes. Flag any cross-project coordination needed. Send to Josh via Telegram (6690120787) only if issues found."
+    },
+    {
+      "name": "dependency-audit",
+      "schedule": "4 10 * * 1",
+      "prompt": "Dependency Audit: Monday 10 AM. For each repo (clearpath, lifecycle-killer, nonprofit-hub): run npm audit summary. Flag critical/high vulnerabilities. Check for major version bumps in key deps (express, drizzle-orm, react, vite). Send to Josh via Telegram (6690120787) only if action needed."
+    }
+  ],
+  "model": "claude-sonnet-4-6"
+}

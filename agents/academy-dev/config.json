@@ -1,0 +1,15 @@
+{
+  "agent_name": "academy-dev",
+  "enabled": true,
+  "startup_delay": 5,
+  "max_session_seconds": 255600,
+  "working_directory": "/Users/joshweiss/code/clearpath",
+  "crons": [
+    {
+      "name": "ai-education-research",
+      "interval": "7d",
+      "prompt": "Research AI education trends for Academy curriculum: Search for (1) new Anthropic/Claude training content, (2) what top AI influencer trainers are teaching this week (Ethan Mollick, Matt Wolfe, Liam Ottley, Nick Saraev, Justin Welsh and others), (3) trending AI productivity topics for business professionals. Identify 3-5 patterns relevant to our Academy curriculum (aware/fluent/strategic tiers for consultants and professional services). Write findings to /Users/joshweiss/code/clearpath/shared/academy-research-feed.md. Then send a digest to Telegram chat_id 6690120787 using: CRM_AGENT_NAME=academy-dev bash /Users/joshweiss/code/claude-remote-manager/core/bus/send-telegram.sh 6690120787 with a summary of top findings and any curriculum gaps identified."
+    }
+  ],
+  "model": "claude-opus-4-6"
+}

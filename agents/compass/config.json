@@ -1,0 +1,24 @@
+{
+  "agent_name": "compass",
+  "enabled": true,
+  "startup_delay": 5,
+  "max_session_seconds": 255600,
+  "crons": [
+    {
+      "name": "client-health",
+      "schedule": "4 9 * * 3",
+      "prompt": "Client Health Check: Wednesday 9 AM. Scan active clients in ~/code/knowledge-sync/areas/clearworks/clients/ and tasks/clearworks/active.md Client Delivery section. Calculate health scores. Flag >14 days no contact, stalled deliverables, overdue items. Send to Josh via Telegram (6690120787)."
+    },
+    {
+      "name": "action-items",
+      "schedule": "3 16 * * 1-5",
+      "prompt": "Action Items Check: Weekdays 4 PM. Check open items from tasks/clearworks/active.md Client Delivery section. Flag overdue items (check sent folder first!). Send summary to Josh via Telegram (6690120787) if anything needs attention."
+    },
+    {
+      "name": "deliverable-status",
+      "schedule": "5 9 * * 1",
+      "prompt": "Deliverable Status: Monday 9 AM. Review all active projects in tasks/clearworks/active.md. Check git activity across clearpath, lifecycle-killer, nonprofit-hub, academy. Flag stalled projects (no commits in >5 days with open deliverables). Send weekly status to Josh via Telegram (6690120787)."
+    }
+  ],
+  "model": "claude-sonnet-4-6"
+}
