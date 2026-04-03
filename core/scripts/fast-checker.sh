@@ -55,6 +55,168 @@ trap 'rm -rf "$LOCKDIR"; rm -f "$PIDFILE"' EXIT
 
 log "Starting (pid $$). Waiting for agent to finish bootstrapping..."
 
+# --- Cron scheduler state ---
+# Infrastructure-level cron: reads config.json crons[] and fires them on schedule.
+# No LLM involvement — crons fire even if agent forgot bootstrap.
+CRON_STATE_FILE="${CRM_ROOT}/state/${AGENT}.cron-state.json"
+CRON_LAST_CHECK=0
+CRON_CHECK_INTERVAL=30  # check every 30 poll cycles (~30s)
+
+# Initialize cron state file if missing
+if [[ ! -f "$CRON_STATE_FILE" ]]; then
+    echo '{}' > "$CRON_STATE_FILE"
+fi
+
+# Check if a cron expression matches the current time
+# Supports: */N * * * *, M H * * *, M H * * D, M H */D * *
+cron_matches_now() {
+    local cron_expr="$1"
+    local now_min now_hour now_dom now_dow
+    now_min=$(date +%-M)
+    now_hour=$(date +%-H)
+    now_dom=$(date +%-d)
+    now_dow=$(date +%u)  # 1=Mon..7=Sun
+    # Convert to 0=Sun..6=Sat for cron compatibility
+    [[ "$now_dow" == "7" ]] && now_dow=0
+
+    local c_min c_hour c_dom c_mon c_dow
+    read -r c_min c_hour c_dom c_mon c_dow <<< "$cron_expr"
+
+    # Check minute
+    if [[ "$c_min" == "*" ]]; then
+        : # matches all
+    elif [[ "$c_min" =~ ^\*/([0-9]+)$ ]]; then
+        local step="${BASH_REMATCH[1]}"
+        (( now_min % step != 0 )) && return 1
+    elif [[ "$c_min" =~ ^[0-9]+$ ]]; then
+        (( now_min != c_min )) && return 1
+    fi
+
+    # Check hour
+    if [[ "$c_hour" == "*" ]]; then
+        :
+    elif [[ "$c_hour" =~ ^\*/([0-9]+)$ ]]; then
+        local step="${BASH_REMATCH[1]}"
+        (( now_hour % step != 0 )) && return 1
+    elif [[ "$c_hour" =~ ^[0-9]+$ ]]; then
+        (( now_hour != c_hour )) && return 1
+    fi
+
+    # Check day of month
+    if [[ "$c_dom" == "*" ]]; then
+        :
+    elif [[ "$c_dom" =~ ^\*/([0-9]+)$ ]]; then
+        local step="${BASH_REMATCH[1]}"
+        (( now_dom % step != 0 )) && return 1
+    elif [[ "$c_dom" =~ ^[0-9]+$ ]]; then
+        (( now_dom != c_dom )) && return 1
+    fi
+
+    # Check day of week (supports 0-6 and comma-separated like 1,3,5)
+    if [[ "$c_dow" == "*" ]]; then
+        :
+    elif [[ "$c_dow" =~ , ]]; then
+        # Comma-separated list
+        local match=false
+        IFS=',' read -ra DAYS <<< "$c_dow"
+        for d in "${DAYS[@]}"; do
+            (( d == now_dow )) && match=true
+        done
+        [[ "$match" == "false" ]] && return 1
+    elif [[ "$c_dow" =~ ^([0-9])-([0-9])$ ]]; then
+        # Range like 1-5
+        local start="${BASH_REMATCH[1]}" end="${BASH_REMATCH[2]}"
+        (( now_dow < start || now_dow > end )) && return 1
+    elif [[ "$c_dow" =~ ^[0-9]+$ ]]; then
+        (( now_dow != c_dow )) && return 1
+    fi
+
+    return 0
+}
+
+# Convert interval shorthand (15m, 2h) to seconds for dedup window
+interval_to_seconds() {
+    local interval="$1"
+    if [[ "$interval" =~ ^([0-9]+)m$ ]]; then
+        echo $(( ${BASH_REMATCH[1]} * 60 ))
+    elif [[ "$interval" =~ ^([0-9]+)h$ ]]; then
+        echo $(( ${BASH_REMATCH[1]} * 3600 ))
+    elif [[ "$interval" =~ ^([0-9]+)d$ ]]; then
+        echo $(( ${BASH_REMATCH[1]} * 86400 ))
+    elif [[ "$interval" =~ ^([0-9]+)s$ ]]; then
+        echo "${BASH_REMATCH[1]}"
+    else
+        echo "600"  # default 10min
+    fi
+}
+
+# Fire due crons from config.json
+fire_due_crons() {
+    local config_file="${AGENT_DIR}/config.json"
+    [[ ! -f "$config_file" ]] && return
+
+    local crons_json
+    crons_json=$(jq -c '.crons // []' "$config_file" 2>/dev/null || echo "[]")
+    local cron_count
+    cron_count=$(echo "$crons_json" | jq 'length' 2>/dev/null || echo "0")
+    (( cron_count == 0 )) && return
+
+    local now_epoch
+    now_epoch=$(date +%s)
+
+    local cron_state
+    cron_state=$(cat "$CRON_STATE_FILE" 2>/dev/null || echo "{}")
+
+    for i in $(seq 0 $((cron_count - 1))); do
+        local name schedule interval prompt last_fired cooldown_secs
+        name=$(echo "$crons_json" | jq -r ".[$i].name // \"cron_$i\"")
+        schedule=$(echo "$crons_json" | jq -r ".[$i].schedule // \"\"")
+        interval=$(echo "$crons_json" | jq -r ".[$i].interval // \"\"")
+        prompt=$(echo "$crons_json" | jq -r ".[$i].prompt // \"\"")
+        [[ -z "$prompt" ]] && continue
+
+        last_fired=$(echo "$cron_state" | jq -r ".\"${name}\" // 0")
+
+        if [[ -n "$schedule" ]]; then
+            # Cron expression — check if it matches now
+            if ! cron_matches_now "$schedule"; then
+                continue
+            fi
+            # Cooldown: don't re-fire within 55 seconds (prevents double-fire within same minute)
+            cooldown_secs=55
+        elif [[ -n "$interval" ]]; then
+            # Interval shorthand — convert and check elapsed
+            cooldown_secs=$(interval_to_seconds "$interval")
+            local elapsed=$(( now_epoch - last_fired ))
+            if (( elapsed < cooldown_secs )); then
+                continue
+            fi
+        else
+            continue
+        fi
+
+        # Check cooldown
+        local since_last=$(( now_epoch - last_fired ))
+        if (( since_last < cooldown_secs )); then
+            continue
+        fi
+
+        # Fire it
+        log "CRON FIRE [${name}]: injecting prompt (${#prompt} chars)"
+        if inject_messages "$prompt"; then
+            INJECT_COUNT=$((INJECT_COUNT + 1))
+            # Update state
+            cron_state=$(echo "$cron_state" | jq -c --arg n "$name" --argjson t "$now_epoch" '.[$n] = $t')
+            echo "$cron_state" > "$CRON_STATE_FILE"
+            log "CRON FIRE [${name}]: success, next eligible after cooldown"
+            # Only fire one cron per poll cycle to avoid flooding
+            return
+        else
+            log "CRON FIRE [${name}]: injection failed"
+        fi
+    done
+}
+
 # Wait for Claude Code to be ready before injecting messages.
 # Detects readiness by checking for the "permissions" status bar text
 # in the tmux pane, which only appears once Claude Code's UI is fully
@@ -834,6 +996,16 @@ Reply using: bash ../../core/bus/send-message.sh ${FROM} normal '<your reply>' $
             fi
         else
             AGENT_WAS_BUSY=true
+        fi
+    fi
+
+    # --- Infrastructure cron scheduler ---
+    # Fires crons from config.json independently of LLM bootstrap.
+    # Checks every CRON_CHECK_INTERVAL polls (~30s). Only fires when agent is idle
+    # to avoid interrupting active work (cron will fire on next idle check).
+    if (( POLL_COUNT % CRON_CHECK_INTERVAL == 0 )); then
+        if is_agent_idle; then
+            fire_due_crons
         fi
     fi
 

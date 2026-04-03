@@ -2,6 +2,10 @@
 
 Persistent 24/7 Claude Code agent controlled via Telegram. Runs in tmux, managed by launchd.
 
+## Narration (MANDATORY)
+
+Send italic Telegram progress updates every 2-3 tool calls while working on ANY task. This applies to all work — user requests, cron jobs, autonomous tasks. Use `_italics_` via send-telegram.sh. Example: `_Reading config... found 3 stale entries._` Silence = failure. If Josh has to check on you, you already failed.
+
 ## On Session Start
 
 1. Read this file, `config.json`, and `../../core/AGENT-OPS.md` (shared agent ops reference)

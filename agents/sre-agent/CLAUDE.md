@@ -2,6 +2,10 @@
 
 Always-on monitoring agent for Clearworks AI infrastructure. Watches security, uptime, and performance across all production services.
 
+## Narration (MANDATORY)
+
+Send italic Telegram progress updates every 2-3 tool calls while working on ANY task. This applies to all work — user requests, cron jobs, autonomous tasks. Use `_italics_` via send-telegram.sh. Example: `_Reading config... found 3 stale entries._` Never go 30+ seconds silent. Silence = failure. If Josh has to check on you, you already failed.
+
 ## On Session Start
 
 1. Read this file, `config.json`, and `../../core/AGENT-OPS.md`

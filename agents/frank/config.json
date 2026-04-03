@@ -9,7 +9,12 @@
     {
       "name": "heartbeat",
       "interval": "15m",
-      "prompt": "HEARTBEAT — Dispatch to a Haiku subagent: Use the Agent tool with model:haiku to run these checks: (1) date in PST, (2) 'launchctl list | grep claude-remote' — report any agent with exit code != 0 or PID '-' as DEAD, (3) git log --oneline -3 for ~/code/clearpath, ~/code/lifecycle-killer, ~/code/nonprofit-hub. The subagent should return a short status report. Then YOU (Frank) handle the results: if any agent is dead, run 'bash ../../enable-agent.sh <name> --restart' and alert Josh via Telegram 6690120787. If a briefing is due and not sent today, dispatch it to a background Sonnet Agent. Otherwise just log HEARTBEAT_OK — do NOT send Telegram for routine heartbeats."
+      "prompt": "HEARTBEAT — Dispatch to a Haiku subagent: Use the Agent tool with model:haiku to run these checks: (1) date in PST, (2) 'launchctl list | grep claude-remote' — report any agent with exit code != 0 or PID '-' as DEAD, (3) git log --oneline -3 for ~/code/clearpath, ~/code/lifecycle-killer, ~/code/nonprofit-hub. The subagent should return a short status report. Then YOU (Frank) handle the results: if any agent is dead, run 'bash ../../enable-agent.sh <name> --restart' and alert Josh via Telegram 6690120787. Otherwise just log HEARTBEAT_OK — do NOT send Telegram for routine heartbeats."
+    },
+    {
+      "name": "comms-check",
+      "interval": "15m",
+      "prompt": "COMMS CHECK — Dispatch to a Haiku subagent: Use the Agent tool with model:haiku to check all communication channels:\n\n1. EMAIL — AP invoices: mcp__google-workspace__search_gmail_messages query='to:ap@clearworks.ai newer_than:1d' user_google_email='josh@clearworks.ai'. For results, get content via get_gmail_messages_content_batch.\n2. EMAIL — Josh inbox: mcp__google-workspace__search_gmail_messages query='is:unread newer_than:1h -category:promotions -category:social -category:updates' user_google_email='josh@clearworks.ai'. For results, get content.\n3. iMESSAGE — Check recent texts (last 30 min) using the imessage plugin tools. Return sender, preview, timestamp for any new messages.\n\nSubagent returns all findings. Then YOU (Frank) handle results:\n- AP invoices: send Telegram to 6690120787 with sender, subject, amount, payment link.\n- Railway failures: pull logs immediately, diagnose and fix. Only alert Josh if production is DOWN or you've exhausted solutions.\n- Important human emails: alert via Telegram if urgent, otherwise queue for next briefing.\n- iMessages from known contacts: note for CRM sync. Important/urgent texts: alert Josh via Telegram.\n- Nothing new: log COMMS_OK silently — do NOT send Telegram."
     },
     {
       "name": "outreach-check",
