@@ -1,0 +1,19 @@
+{
+  "agent_name": "revenue-dev",
+  "enabled": true,
+  "startup_delay": 10,
+  "max_session_seconds": 255600,
+  "model": "claude-sonnet-4-6",
+  "crons": [
+    {
+      "name": "daily-pipeline-scan",
+      "interval": "24h",
+      "prompt": "Run daily pipeline scan: fetch GET https://clearpath-production-c86d.up.railway.app/api/revenue/pipeline-digest with X-API-Key header from $CLEARPATH_API_KEY. Check kill switch first. Analyze the response: (1) stale deals — any with daysSinceSignal >= 14, sorted by staleness; (2) stalled proposals — any in stalledProposals array; (3) upcoming renewals in next 30 days; (4) expiring agreements. Format a concise Telegram digest with sections: *Pipeline Health*, *Needs Attention*, *Renewals Due*. Send to Josh (chat_id 6690120787). Skip section if empty. Log token usage after."
+    },
+    {
+      "name": "weekly-pipeline-summary",
+      "interval": "168h",
+      "prompt": "Run weekly pipeline summary: fetch GET https://clearpath-production-c86d.up.railway.app/api/revenue/pipeline-digest with X-API-Key from $CLEARPATH_API_KEY. Check kill switch first. Build a full weekly summary: total active deals, MRR by stage, wins/losses in the past 7 days (from recentlyClosed), top 3 attention items. Format a clear Telegram report and send to Josh (chat_id 6690120787). Log token usage after."
+    }
+  ]
+}

@@ -27,7 +27,20 @@ log() {
     echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) [fast-checker/${AGENT}] $1" >> "$LOG_FILE"
 }
 
-log "Starting. Waiting for agent to finish bootstrapping..."
+# --- Singleton: prevent duplicate fast-checker processes per agent ---
+PIDFILE="${CRM_ROOT}/state/${AGENT}.fast-checker.pid"
+mkdir -p "${CRM_ROOT}/state"
+if [[ -f "$PIDFILE" ]]; then
+    OLD_PID=$(cat "$PIDFILE" 2>/dev/null || echo "")
+    if [[ -n "$OLD_PID" ]] && kill -0 "$OLD_PID" 2>/dev/null; then
+        log "Another fast-checker (pid ${OLD_PID}) already running for ${AGENT}. Exiting."
+        exit 0
+    fi
+fi
+echo $$ > "$PIDFILE"
+trap 'rm -f "$PIDFILE"' EXIT
+
+log "Starting (pid $$). Waiting for agent to finish bootstrapping..."
 
 # Wait for Claude Code to be ready before injecting messages.
 # Detects readiness by checking for the "permissions" status bar text
@@ -46,9 +59,80 @@ done
 
 log "Bootstrap wait complete. Beginning poll loop."
 
+# --- State tracking for context monitoring + responsiveness ---
+POLL_COUNT=0
+INJECT_COUNT=0
+mkdir -p "${CRM_ROOT}/state"
+SESSION_START_FILE="${CRM_ROOT}/state/${AGENT}.session-start"
+if [[ ! -f "${SESSION_START_FILE}" ]]; then
+    date +%s > "${SESSION_START_FILE}"
+fi
+SESSION_START=$(cat "${SESSION_START_FILE}")
+
+# Configurable thresholds (from config.json or defaults)
+CONTEXT_MAX_HOURS=$(jq -r '.context_max_hours // 16' "${AGENT_DIR}/config.json" 2>/dev/null || echo "16")
+CONTEXT_MAX_INJECTIONS=$(jq -r '.context_max_injections // 150' "${AGENT_DIR}/config.json" 2>/dev/null || echo "150")
+CONTEXT_RESTART_TRIGGERED=false
+
+LAST_AUTO_REPLY=0
+AUTO_REPLY_COOLDOWN=60  # seconds between auto-replies
+
+# Typing indicator state (Fix 9)
+HUMAN_MSG_PENDING=false
+HUMAN_MSG_CHAT_ID=""
+TYPING_LAST_SENT=0
+
+# Telemetry state file (Fix 7)
+STATS_FILE="${CRM_ROOT}/state/${AGENT}.stats.json"
+
+# Check if agent is idle by looking at tmux pane
+is_agent_idle() {
+    local pane_bottom
+    pane_bottom=$(tmux capture-pane -t "${TMUX_SESSION}:0.0" -p 2>/dev/null | grep -v '^$' | tail -3)
+    # Claude Code shows > prompt when idle, tool output/spinners when busy
+    echo "$pane_bottom" | grep -qE '^\s*>\s*$'
+}
+
+# Auto-reply on Telegram when agent is busy processing
+auto_reply_busy() {
+    local chat_id="$1"
+    local now
+    now=$(date +%s)
+    if (( now - LAST_AUTO_REPLY > AUTO_REPLY_COOLDOWN )); then
+        telegram_api_post "sendMessage" \
+            -H "Content-Type: application/json" \
+            -d "$(jq -n -c --arg cid "$chat_id" --arg txt "Got it, processing..." \
+                '{chat_id: $cid, text: $txt}')" > /dev/null 2>&1 || true
+        LAST_AUTO_REPLY=$now
+        log "Auto-replied 'processing' to ${chat_id}"
+    fi
+}
+
+# Dedup: rolling hash file to prevent double-injection on crash recovery
+DEDUP_FILE="${CRM_ROOT}/state/${AGENT}.dedup"
+
 # Inject a block of messages into the Claude Code session.
 inject_messages() {
     local content="$1"
+
+    # --- Dedup check (Fix 8) ---
+    local msg_hash
+    msg_hash=$(printf '%s' "$content" | md5 -q 2>/dev/null) || msg_hash=""
+    if [[ -z "$msg_hash" ]]; then
+        msg_hash=$(printf '%s' "$content" | md5sum 2>/dev/null | cut -d' ' -f1) || msg_hash=""
+    fi
+    if [[ -z "$msg_hash" ]]; then
+        msg_hash="nohash_$(date +%s)_$$"
+        log "Dedup: hash computation failed, using fallback: ${msg_hash}"
+    fi
+    if [[ -f "$DEDUP_FILE" ]] && grep -qxF "$msg_hash" "$DEDUP_FILE" 2>/dev/null; then
+        log "Dedup: skipping duplicate (hash: ${msg_hash:0:8})"
+        return 0
+    fi
+    echo "$msg_hash" >> "$DEDUP_FILE"
+    # Clean dedup file and remove any empty lines
+    grep -v '^$' "$DEDUP_FILE" 2>/dev/null | tail -100 > "${DEDUP_FILE}.tmp" 2>/dev/null && mv "${DEDUP_FILE}.tmp" "$DEDUP_FILE"
+
     local tmpfile
     tmpfile=$(mktemp "${CRM_ROOT}/logs/${AGENT}/.crm-msg-XXXXXX.txt" 2>/dev/null) || {
         log "mktemp failed - skipping injection to avoid bare Enter"
@@ -141,6 +225,32 @@ send_next_question() {
 }
 
 while true; do
+    POLL_COUNT=$((POLL_COUNT + 1))
+
+    # --- Context threshold check (every ~2 min) ---
+    if (( POLL_COUNT % 120 == 0 )) && [[ "$CONTEXT_RESTART_TRIGGERED" == "false" ]]; then
+        NOW_TS=$(date +%s)
+        ELAPSED_HOURS=$(( (NOW_TS - SESSION_START) / 3600 ))
+
+        SHOULD_RESTART=false
+        RESTART_REASON=""
+
+        if (( ELAPSED_HOURS >= CONTEXT_MAX_HOURS )); then
+            SHOULD_RESTART=true
+            RESTART_REASON="session running ${ELAPSED_HOURS}h (limit: ${CONTEXT_MAX_HOURS}h)"
+        elif (( INJECT_COUNT >= CONTEXT_MAX_INJECTIONS )); then
+            SHOULD_RESTART=true
+            RESTART_REASON="injection count ${INJECT_COUNT} (limit: ${CONTEXT_MAX_INJECTIONS})"
+        fi
+
+        if [[ "$SHOULD_RESTART" == "true" ]]; then
+            log "CONTEXT_THRESHOLD: ${RESTART_REASON} — triggering hard-restart"
+            CONTEXT_RESTART_TRIGGERED=true
+            inject_messages "SYSTEM: Context threshold reached (${RESTART_REASON}). Before restarting: 1) Write a handoff file to ${CRM_ROOT}/state/${AGENT}.handoff.md with current tasks, briefings sent today, open threads, and in-progress work. 2) Notify Josh via Telegram you're restarting. 3) Run: bash ../../core/bus/hard-restart.sh --reason '${RESTART_REASON}'"
+            rm -f "${SESSION_START_FILE}"
+        fi
+    fi
+
     # Exit if tmux session is gone
     if ! tmux has-session -t "${TMUX_SESSION}" 2>/dev/null; then
         log "Tmux session gone. Exiting."
@@ -148,6 +258,15 @@ while true; do
     fi
 
     MESSAGE_BLOCK=""
+
+    # --- Kill switch check ---
+    KILL_SWITCH_FILE="${CRM_ROOT}/agents/${AGENT}/kill-switch"
+    if [[ -f "$KILL_SWITCH_FILE" ]]; then
+        REASON=$(cat "$KILL_SWITCH_FILE" 2>/dev/null || echo "paused")
+        log "Kill switch active (${REASON}) — skipping message poll"
+        sleep 5
+        continue
+    fi
 
     # --- Telegram ---
     TG_OUTPUT=$(bash "${BUS_DIR}/check-telegram.sh" 2>/dev/null || echo "")
@@ -366,11 +485,38 @@ Reply using: bash ../../core/bus/send-telegram.sh ${CHAT_ID} \"<your reply>\"
 
 "
             else
+                # /status command: respond directly from fast-checker (Fix 10)
+                if [[ "$TEXT" == "/status" ]]; then
+                    NOW_S=$(date +%s)
+                    UP_H=$(( (NOW_S - SESSION_START) / 3600 ))
+                    UP_M=$(( ((NOW_S - SESSION_START) % 3600) / 60 ))
+                    is_agent_idle && IDLE_STR="idle" || IDLE_STR="busy"
+                    STATUS_MSG="*${AGENT} Status*
+Uptime: ${UP_H}h ${UP_M}m
+Injections: ${INJECT_COUNT}/${CONTEXT_MAX_INJECTIONS}
+Time: ${UP_H}h/${CONTEXT_MAX_HOURS}h limit
+Fast-checker: running (poll ${POLL_COUNT})
+Agent: ${IDLE_STR}"
+                    telegram_api_post "sendMessage" \
+                        -H "Content-Type: application/json" \
+                        -d "$(jq -n -c --arg cid "$CHAT_ID" --arg txt "$STATUS_MSG" --arg pm "Markdown" \
+                            '{chat_id: $cid, text: $txt, parse_mode: $pm}')" > /dev/null 2>&1 || true
+                    log "Responded to /status directly"
+                    continue
+                fi
+
                 # Built-in CLI commands: inject raw so they trigger directly
-                if [[ "$TEXT" =~ ^/(compact|clear|help|cost|login|logout|status|doctor|config|bug|init|review|fast|slow)$ ]]; then
+                if [[ "$TEXT" =~ ^/(compact|clear|help|cost|login|logout|doctor|config|bug|init|review|fast|slow)$ ]]; then
                     MESSAGE_BLOCK+="${TEXT}
 "
                 else
+                    # Auto-reply when agent is busy processing
+                    if ! is_agent_idle; then
+                        auto_reply_busy "${CHAT_ID}"
+                    fi
+                    # Track human message for typing indicator (Fix 9)
+                    HUMAN_MSG_PENDING=true
+                    HUMAN_MSG_CHAT_ID="${CHAT_ID}"
                     REPLY_CONTEXT=""
                     [[ -n "$REPLY_TO_TEXT" ]] && REPLY_CONTEXT="
 In reply to: \"${REPLY_TO_TEXT}\""
@@ -421,12 +567,44 @@ Reply using: bash ../../core/bus/send-message.sh ${FROM} normal '<your reply>' $
     # --- Inject if anything found ---
     if [[ -n "$MESSAGE_BLOCK" ]]; then
         if inject_messages "$MESSAGE_BLOCK"; then
+            INJECT_COUNT=$((INJECT_COUNT + 1))
             for ack_id in "${INBOX_MSG_IDS[@]+"${INBOX_MSG_IDS[@]}"}"; do
                 bash "${BUS_DIR}/ack-inbox.sh" "$ack_id" 2>/dev/null || true
             done
             # Cooldown after injection
             sleep 5
         fi
+    fi
+
+    # --- Typing indicator while agent processes human message (Fix 9) ---
+    if [[ "$HUMAN_MSG_PENDING" == "true" ]]; then
+        if ! is_agent_idle; then
+            NOW_TS=$(date +%s)
+            if (( NOW_TS - TYPING_LAST_SENT >= 5 )); then
+                telegram_api_post "sendChatAction" \
+                    -H "Content-Type: application/json" \
+                    -d "$(jq -n -c --arg cid "$HUMAN_MSG_CHAT_ID" '{chat_id: $cid, action: "typing"}')" \
+                    > /dev/null 2>&1 || true
+                TYPING_LAST_SENT=$NOW_TS
+            fi
+        else
+            HUMAN_MSG_PENDING=false
+        fi
+    fi
+
+    # --- Health telemetry (Fix 7) — write stats every ~5 min ---
+    if (( POLL_COUNT % 300 == 0 )); then
+        NOW_TS=$(date +%s)
+        jq -n -c \
+            --argjson uptime "$((NOW_TS - SESSION_START))" \
+            --argjson inject_count "$INJECT_COUNT" \
+            --argjson inject_limit "$CONTEXT_MAX_INJECTIONS" \
+            --argjson hours_limit "$CONTEXT_MAX_HOURS" \
+            --argjson poll_count "$POLL_COUNT" \
+            --arg last_check "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --arg agent_state "$(is_agent_idle && echo idle || echo busy)" \
+            '{uptime_s: $uptime, injects: $inject_count, inject_limit: $inject_limit, hours_limit: $hours_limit, polls: $poll_count, checked: $last_check, agent: $agent_state}' \
+            > "${STATS_FILE}" 2>/dev/null
     fi
 
     sleep 1
