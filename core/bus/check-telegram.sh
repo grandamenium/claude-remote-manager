@@ -62,7 +62,8 @@ if [[ "${MSG_COUNT}" -gt 0 ]]; then
         from: .message.from.first_name,
         text: .message.text,
         date: .message.date,
-        type: "message"
+        type: "message",
+        reply_to_text: (.message.reply_to_message.text // null)
     }'
 
     # Handle photo messages: download largest size and output with local path

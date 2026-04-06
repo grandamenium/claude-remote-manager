@@ -158,6 +158,7 @@ while true; do
             FROM=$(echo "$line" | jq -r '.from // "unknown"' 2>/dev/null || echo "unknown")
             TEXT=$(echo "$line" | jq -r '.text // ""' 2>/dev/null || echo "")
             CHAT_ID=$(echo "$line" | jq -r '.chat_id // ""' 2>/dev/null || echo "")
+            REPLY_TO_TEXT=$(echo "$line" | jq -r '.reply_to_text // ""' 2>/dev/null || echo "")
 
             # Sanitize FROM to prevent header injection
             if [[ ! "${FROM}" =~ ^[a-zA-Z0-9_\ -]+$ ]]; then
@@ -370,7 +371,10 @@ Reply using: bash ../../core/bus/send-telegram.sh ${CHAT_ID} \"<your reply>\"
                     MESSAGE_BLOCK+="${TEXT}
 "
                 else
-                    MESSAGE_BLOCK+="=== TELEGRAM from ${FROM} (chat_id:${CHAT_ID}) ===
+                    REPLY_CONTEXT=""
+                    [[ -n "$REPLY_TO_TEXT" ]] && REPLY_CONTEXT="
+In reply to: \"${REPLY_TO_TEXT}\""
+                    MESSAGE_BLOCK+="=== TELEGRAM from ${FROM} (chat_id:${CHAT_ID}) ===${REPLY_CONTEXT}
 \`\`\`
 ${TEXT}
 \`\`\`

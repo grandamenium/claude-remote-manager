@@ -150,8 +150,10 @@ json.dump(deep_merge(base, override), open(sys.argv[3], 'w'), indent=2)
             EXTRA_FLAGS+=(--settings "${AGENT_SETTINGS}")
         fi
     fi
-    # Give agent access to central repo for bus scripts, config, etc.
-    EXTRA_FLAGS+=(--add-dir "${TEMPLATE_ROOT}")
+    # NOTE: --add-dir causes a hang on startup in Claude Code v2.1.87+
+    # Bus scripts already use absolute paths via CRM_TEMPLATE_ROOT env var,
+    # so this is no longer needed. Kept as comment for reference.
+    # EXTRA_FLAGS+=(--add-dir "${TEMPLATE_ROOT}")
 fi
 
 # Prompts - two distinct variants based on start mode
