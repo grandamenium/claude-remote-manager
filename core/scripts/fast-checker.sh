@@ -335,6 +335,35 @@ local_file: ${IMAGE_PATH}
 Reply using: bash ../../core/bus/send-telegram.sh ${CHAT_ID} \"<your reply>\"
 
 "
+            elif [[ "$TYPE" == "document" ]]; then
+                DOC_PATH=$(echo "$line" | jq -r '.file_path // ""' 2>/dev/null || echo "")
+                DOC_NAME=$(echo "$line" | jq -r '.file_name // ""' 2>/dev/null || echo "")
+                MESSAGE_BLOCK+="=== TELEGRAM DOCUMENT from ${FROM} (chat_id:${CHAT_ID}) ===
+caption:
+\`\`\`
+${TEXT}
+\`\`\`
+local_file: ${DOC_PATH}
+file_name: ${DOC_NAME}
+Reply using: bash ../../core/bus/send-telegram.sh ${CHAT_ID} \"<your reply>\"
+
+"
+            elif [[ "$TYPE" == "voice" || "$TYPE" == "audio" ]]; then
+                AUDIO_PATH=$(echo "$line" | jq -r '.file_path // ""' 2>/dev/null || echo "")
+                AUDIO_NAME=$(echo "$line" | jq -r '.file_name // ""' 2>/dev/null || echo "")
+                MESSAGE_BLOCK+="=== TELEGRAM ${TYPE^^} from ${FROM} (chat_id:${CHAT_ID}) ===
+local_file: ${AUDIO_PATH}
+file_name: ${AUDIO_NAME}
+Reply using: bash ../../core/bus/send-telegram.sh ${CHAT_ID} \"<your reply>\"
+
+"
+            elif [[ "$TYPE" == "video_note" ]]; then
+                VIDEO_PATH=$(echo "$line" | jq -r '.file_path // ""' 2>/dev/null || echo "")
+                MESSAGE_BLOCK+="=== TELEGRAM VIDEO NOTE from ${FROM} (chat_id:${CHAT_ID}) ===
+local_file: ${VIDEO_PATH}
+Reply using: bash ../../core/bus/send-telegram.sh ${CHAT_ID} \"<your reply>\"
+
+"
             else
                 # Built-in CLI commands: inject raw so they trigger directly
                 if [[ "$TEXT" =~ ^/(compact|clear|help|cost|login|logout|status|doctor|config|bug|init|review|fast|slow)$ ]]; then
