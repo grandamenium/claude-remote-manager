@@ -274,9 +274,12 @@ tmux send-keys -t "${TMUX_SESSION}:0.0" "${INITIAL_CMD}" Enter
 graceful_shutdown() {
     echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) SIGTERM received for ${AGENT}" >> "${CRASH_LOG}"
     if tmux has-session -t "${TMUX_SESSION}" 2>/dev/null; then
-        tmux send-keys -t "${TMUX_SESSION}:0.0" \
-            "SYSTEM SHUTDOWN: SIGTERM received. Session ending in 30 seconds. Save your work NOW." Enter
-        sleep 30
+        # Give Claude a chance to save work, then kill the session.
+        # Use /exit to trigger Claude's own shutdown, then force-kill after timeout.
+        tmux send-keys -t "${TMUX_SESSION}:0.0" C-c
+        sleep 2
+        tmux send-keys -t "${TMUX_SESSION}:0.0" "/exit" Enter
+        sleep 10
         tmux kill-session -t "${TMUX_SESSION}" 2>/dev/null || true
     fi
 }
