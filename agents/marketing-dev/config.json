@@ -15,5 +15,6 @@
       "interval": "48h",
       "prompt": "Run content pipeline nudge check: fetch GET https://clearpath-production-c86d.up.railway.app/api/marketing/content-digest with X-API-Key from $CLEARPATH_API_KEY. Check kill switch first. Examine the flags array. If it contains any of: seed_bin_empty, pipeline_empty, nothing_approved_to_post, newsletter_not_approved — send a brief nudge to Josh (chat_id 6690120787) describing exactly what needs attention and what action to take. If flags array is empty, do nothing (NUDGE_OK). Log token usage after."
     }
-  ]
+  ],
+  "passive_frozen_threshold": 1800
 }
