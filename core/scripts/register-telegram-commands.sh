@@ -151,23 +151,72 @@ for dir in "${SCAN_DIRS[@]}"; do
         echo "${SEEN}" | grep -q "^${cmd}$" && continue
         SEEN="${SEEN}${cmd}"$'\n'
 
-        # jq handles all JSON escaping; truncate description to Telegram's limit
+        # jq handles all JSON escaping; truncate description to Telegram's limit.
+        # Telegram counts BYTES, not characters. `cut -c` is ambiguous on BSD
+        # under UTF-8 locales, so we force LC_ALL=C and use `cut -b` for true
+        # byte truncation. pt-BR descriptions with accented chars (`ção`, `é`)
+        # use 2 bytes per accented codepoint and would otherwise silently
+        # exceed the 256-byte limit. Cut at 253 to leave a 3-byte safety
+        # margin for any partial-UTF-8 trailing bytes.
+        TRUNC_DESC=$(printf '%s' "${desc}" | LC_ALL=C cut -b1-253)
         COMMANDS_JSON=$(echo "${COMMANDS_JSON}" | jq \
             --arg cmd "${cmd}" \
-            --arg desc "$(echo "${desc}" | cut -c1-256)" \
+            --arg desc "${TRUNC_DESC}" \
             '. + [{"command": $cmd, "description": $desc}]')
     done <<< "$(collect_skill_files "${dir}")"
 done
 
 # --- Register with Telegram ---
-COUNT=$(echo "${COMMANDS_JSON}" | jq 'length')
+TOTAL_FOUND=$(echo "${COMMANDS_JSON}" | jq 'length')
 
-if [[ "${COUNT}" -eq 0 ]]; then
+if [[ "${TOTAL_FOUND}" -eq 0 ]]; then
     echo "No commands found to register"
     exit 0
 fi
 
+# Telegram limits: max 100 commands AND an undocumented ~7KB payload size.
+# We binary-search the largest prefix [0:N] of COMMANDS_JSON whose serialized
+# payload fits inside MAX_PAYLOAD_BYTES. Bytes (not characters) are what the
+# Telegram API counts, so payload size is measured with `wc -c` under LC_ALL=C
+# to remain correct under UTF-8 locales (pt-BR descriptions break ${#var}).
+MAX_PAYLOAD_BYTES=6500
+COMMANDS_JSON=$(echo "${COMMANDS_JSON}" | jq '.[0:100]')
+
+payload_bytes_for() {
+    # Args: $1 = JSON array of commands
+    local _payload
+    _payload=$(jq -n --argjson cmds "$1" '{"commands": $cmds}')
+    printf '%s' "${_payload}" | LC_ALL=C wc -c | tr -d ' '
+}
+
+UPPER=$(echo "${COMMANDS_JSON}" | jq 'length')
+LO=0
+HI=${UPPER}
+# Binary search: largest N such that payload([0:N]) <= MAX_PAYLOAD_BYTES.
+while (( LO < HI )); do
+    MID=$(( (LO + HI + 1) / 2 ))
+    CANDIDATE=$(echo "${COMMANDS_JSON}" | jq --argjson n "${MID}" '.[0:$n]')
+    BYTES=$(payload_bytes_for "${CANDIDATE}")
+    if [[ "${BYTES}" -le "${MAX_PAYLOAD_BYTES}" ]]; then
+        LO=${MID}
+    else
+        HI=$(( MID - 1 ))
+    fi
+done
+
+COUNT=${LO}
+
+if [[ "${COUNT}" -eq 0 ]]; then
+    echo "WARNING: even a single command exceeds ${MAX_PAYLOAD_BYTES} bytes — skipping registration" >&2
+    exit 0
+fi
+
+COMMANDS_JSON=$(echo "${COMMANDS_JSON}" | jq --argjson n "${COUNT}" '.[0:$n]')
 PAYLOAD=$(jq -n --argjson cmds "${COMMANDS_JSON}" '{"commands": $cmds}')
+
+if [[ "${COUNT}" -lt "${TOTAL_FOUND}" ]]; then
+    echo "Note: ${TOTAL_FOUND} commands found, registering first ${COUNT} (payload budget ${MAX_PAYLOAD_BYTES} bytes)"
+fi
 RESPONSE=$(curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/setMyCommands" \
     -H "Content-Type: application/json" \
     -d "${PAYLOAD}")

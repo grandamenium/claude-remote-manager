@@ -19,5 +19,6 @@
   ],
   "activity_streaming": true,
   "activity_interval_seconds": 8,
-  "model": "claude-opus-4-6"
+  "model": "claude-opus-4-6",
+  "passive_frozen_threshold": 1800
 }

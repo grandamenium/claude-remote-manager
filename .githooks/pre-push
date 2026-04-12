@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# pre-push — block push if core scripts are not bash 3.2 compatible.
+#
+# macOS ships /bin/bash 3.2.57 from 2007. A bash 4+ idiom (e.g. ${var^^})
+# silently parses on Linux's bash 5+ but crashes with "bad substitution"
+# on the production agents (which run via /bin/bash on the operator's Mac).
+# This hook runs the smoke test before any push so regressions are caught
+# locally instead of in production.
+#
+# To enable this hook for the repo, run once:
+#   git config core.hooksPath .githooks
+#
+# To bypass in an emergency (NOT recommended):
+#   git push --no-verify
+
+set -e
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+SMOKE_TEST="${REPO_ROOT}/tests/smoke-bash-syntax.sh"
+
+if [[ -x "${SMOKE_TEST}" ]]; then
+    echo "[pre-push] running bash syntax smoke test..."
+    if ! "${SMOKE_TEST}"; then
+        echo
+        echo "[pre-push] BLOCKED: bash 3.2 syntax test failed."
+        echo "[pre-push] Fix the script(s) above before pushing."
+        echo "[pre-push] To bypass (emergency only): git push --no-verify"
+        exit 1
+    fi
+else
+    echo "[pre-push] WARNING: ${SMOKE_TEST} not found or not executable; skipping syntax check"
+fi
+
+exit 0

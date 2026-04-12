@@ -81,14 +81,36 @@ if [[ ${CRASH_COUNT} -ge ${MAX_CRASHES_PER_DAY} ]]; then
     exit 1
 fi
 
+# --- Numeric config helper ----------------------------------------------
+# Same sanitation as fast-checker.sh's read_int_config: a malformed config
+# value (string, float, hex, JSON null/array, or a number so large that jq
+# renders it as "1e+30") cannot poison the subsequent `sleep` or session-
+# limit arithmetic on bash 3.2. The int32 clamp keeps jq output in plain
+# decimal form, and the trailing regex guard rejects anything that still
+# is not a base-10 integer. See the equivalent helper in fast-checker.sh
+# for the full pipeline rationale.
+# Args: $1 = jq key path, $2 = default int, $3 = JSON file (optional).
+read_int_config() {
+    local _key="$1"
+    local _default="$2"
+    local _file="${3:-${AGENT_DIR}/config.json}"
+    local _result
+    _result=$(jq -r "(${_key} // ${_default}) | (tonumber? // null) | if . == null then 0 elif . > 2147483647 then 2147483647 elif . < -2147483648 then -2147483648 else floor end" \
+        "${_file}" 2>/dev/null) || _result="${_default}"
+    if [[ ! "${_result}" =~ ^-?[0-9]+$ ]]; then
+        _result="${_default}"
+    fi
+    printf '%s' "${_result}"
+}
+
 # Staggered startup delay to avoid simultaneous API hits
-DELAY=$(jq -r '.startup_delay // 0' "${AGENT_DIR}/config.json" 2>/dev/null || echo "0")
+DELAY=$(read_int_config '.startup_delay' 0)
 sleep ${DELAY}
 
 # Session duration: config override, or default 71 hours (255600s)
 # /loop crons expire at 72h, so we restart 1h before that
 # Set "max_session_seconds" in config.json for testing (e.g. 300)
-MAX_SESSION=$(jq -r '.max_session_seconds // 255600' "${AGENT_DIR}/config.json" 2>/dev/null || echo "255600")
+MAX_SESSION=$(read_int_config '.max_session_seconds' 255600)
 
 # Model override: set "model" in config.json (e.g. "claude-haiku-4-5-20251001")
 MODEL_FLAG=""

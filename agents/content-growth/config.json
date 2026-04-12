@@ -15,5 +15,6 @@
       "interval": "cron:0 8 * * 1",
       "prompt": "Monday newsletter prep. Steps:\n1. Check kill switch: GET https://clearpath-production-c86d.up.railway.app/api/guardrails/status?agentId=content-growth with X-API-Key: $CLEARPATH_API_KEY. If killSwitch true, stop.\n2. Scan this week's CC sessions and git commits for the best story, shipped feature, or insight worth writing about\n3. POST to https://clearpath-production-c86d.up.railway.app/api/grow/newsletter/generate with X-API-Key: $CLEARPATH_API_KEY. Body: {weekOf: current Monday date as YYYY-MM-DD, productLine: 'clearworks', brief: {topic: [best topic from scan], audience: 'founders and execs at SMBs considering AI ops'}}\n4. Send Josh Telegram (chat_id 6690120787) with: 'Weekly newsletter draft ready in Grow > Newsletter.' and the 3 subject line options from the response"
     }
-  ]
+  ],
+  "passive_frozen_threshold": 1800
 }
