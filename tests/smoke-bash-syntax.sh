@@ -40,8 +40,15 @@ for script in "${SCRIPTS[@]}"; do
     fi
 
     # 2. Grep for bash 4+ idioms that parse cleanly but crash at runtime.
+    # Each alternation matches a known bash 4+ feature that bash 3.2 either
+    # tokenises silently (parameter expansions) or accepts under `bash -n`
+    # but rejects when actually executed (`mapfile`, `readarray`, the `-A`,
+    # `-g` and `-n` declare flags in any combination order, namerefs).
+    # The `-[a-zA-Z]*[Agn][a-zA-Z]*` slice catches `-A`, `-g`, `-n`, plus
+    # combined forms like `-gA`, `-Ag`, `-gn`, `-Agn`, etc. — without
+    # false-positiving on bash 3.2-valid flags like `-a`, `-f`, `-i`, `-r`.
     BAD_PATTERNS=$(grep -nE \
-        '\$\{[A-Za-z_0-9]+\^\^?\}|\$\{[A-Za-z_0-9]+,,?\}|^[[:space:]]*mapfile\b|^[[:space:]]*readarray\b|^[[:space:]]*declare -A' \
+        '\$\{[A-Za-z_0-9]+\^\^?\}|\$\{[A-Za-z_0-9]+,,?\}|^[[:space:]]*mapfile\b|^[[:space:]]*readarray\b|^[[:space:]]*declare[[:space:]]+-[a-zA-Z]*[Agn][a-zA-Z]*\b|^[[:space:]]*local[[:space:]]+-n\b|^[[:space:]]*typeset[[:space:]]+-n\b' \
         "${script}" || true)
     if [[ -n "${BAD_PATTERNS}" ]]; then
         echo "FAIL bash4 idiom: ${script}" >&2
