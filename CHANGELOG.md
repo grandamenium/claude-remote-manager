@@ -2,6 +2,28 @@
 
 ## [Unreleased] — Windows Support
 
+### Added (restart scripts port — 2026-04-05)
+- `platform.sh`: `load_instance_id()` — CRLF-safe `.env` parser (prevents `\r` contamination on Windows)
+- `platform.sh`: `parse_reason()` — proper `--reason` flag parser (replaces fragile positional arg parsing)
+- `platform.sh`: `validate_agent_name()`, `validate_instance_id()`, `validate_crm_root()` — input sanitization guards (blocks command injection via agent names, path traversal via `../../`)
+- `platform.sh`: `write_fresh_marker()`, `get_fresh_marker_path()` — secure marker management with `umask 077`
+- `platform.sh`: `check_restart_cooldown()` — 30-second restart cooldown with lockfile (prevents restart loops)
+- `platform.sh`: `is_agent_running()` — cross-platform agent health check (launchctl on macOS, PM2 on Windows)
+- `platform.sh`: `restart_agent_hard()` — cross-platform hard restart abstraction (launchctl unload/load on macOS, PM2 restart + force-fresh marker on Windows)
+- `platform.sh`: `restart_agent_soft()` — cross-platform soft restart abstraction (tmux send-keys on macOS, PM2 restart without marker on Windows)
+
+### Changed (restart scripts port — 2026-04-05)
+- **`hard-restart.sh`** — rewritten as thin caller to `restart_agent_hard()` (was macOS-only, now cross-platform)
+- **`self-restart.sh`** — rewritten as thin caller to `restart_agent_soft()` (was macOS-only, now cross-platform)
+- **`pm2_is_running()`** — replaced `jq` dependency with `pm2 describe` + `grep` (jq commonly absent in Git Bash)
+- Platform existence checks (plist/PM2 process) now run before any state mutation (cooldown lock, force-fresh marker) to prevent stale state files on failure
+
+### Security (restart scripts port — 2026-04-05)
+- Agent names and instance IDs validated against `^[a-zA-Z0-9_-]+$` regex before use in shell commands (prevents command injection)
+- Restart reasons sanitized via `tr '\n\r'` before log append (prevents log forging)
+- Force-fresh markers created with `umask 077` (owner-only on POSIX systems)
+- Corrupted cooldown lockfile content handled gracefully (non-numeric defaults to 0 instead of arithmetic error)
+
 ### Added
 - **Windows support** — CortextOS now runs on Windows 10 (1809+) and Windows 11
 - `core/scripts/platform.sh` — shared platform detection library (is_windows, is_macos, path conversion, inject dir helpers)
