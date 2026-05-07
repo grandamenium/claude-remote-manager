@@ -46,13 +46,13 @@ let activityLogStream = null;
 function log(msg) {
     const line = `${new Date().toISOString()} [win-wrapper/${AGENT_NAME}] ${msg}`;
     process.stdout.write(line + '\n');
-    if (activityLogStream) activityLogStream.write(line + '\n');
+    if (activityLogStream && !activityLogStream.writableEnded) activityLogStream.write(line + '\n');
 }
 
 function logError(msg) {
     const line = `${new Date().toISOString()} [win-wrapper/${AGENT_NAME}] ERROR: ${msg}`;
     process.stderr.write(line + '\n');
-    if (activityLogStream) activityLogStream.write(line + '\n');
+    if (activityLogStream && !activityLogStream.writableEnded) activityLogStream.write(line + '\n');
 }
 
 // ---------------------------------------------------------------------------
@@ -322,6 +322,13 @@ function findClaudeExe() {
 
 let pty = null;          // node-pty instance
 let ptyLogStream = null; // stdout log file stream
+// Rolling tail of recent claude.exe TUI output, kept in-memory so screen-scrape
+// detection (rate-limit modal, reset time, etc.) doesn't have to read the
+// stdout.log file from disk. The wrapper is the PTY parent — it sees every
+// byte before disk anyway. Cap at 16KB; the modal text fits in <2KB.
+let ptyTailBuffer = '';
+let lastPtyDataAt = 0;
+const PTY_TAIL_BUFFER_MAX = 16384;
 let fastCheckerProc = null;
 let isShuttingDown = false;
 let isPlannedRestart = false;  // Set during 71h refresh to prevent crash counting
@@ -343,6 +350,8 @@ function spawnClaude(startMode) {
 
     log(`Spawning PTY: ${claudeExe} ${claudeArgs.join(' ').slice(0, 200)}... mode=${startMode}`);
     writeStatus('starting');
+    // Fresh PTY = fresh screen state; clear any tail from a prior session
+    ptyTailBuffer = '';
 
     // Open log stream for PTY output
     if (ptyLogStream) try { ptyLogStream.end(); } catch { /* ignore */ }
@@ -369,10 +378,15 @@ function spawnClaude(startMode) {
         if (!readyMarked) { readyMarked = true; writeStatus('ready'); log('Ready (timeout fallback)'); }
     }, 30000);
 
-    // Stream PTY output to log + detect readiness — single handler
+    // Stream PTY output to log + maintain in-memory tail + detect readiness
     pty.onData((data) => {
         if (ptyLogStream) ptyLogStream.write(data);
-        if (!readyMarked && data.toLowerCase().includes('permission')) {
+        // Maintain rolling tail buffer for screen-scrape detection (modal,
+        // rate-limit text, reset time). Coerces Buffer → string if needed.
+        const text = typeof data === 'string' ? data : data.toString('utf-8');
+        ptyTailBuffer = (ptyTailBuffer + text).slice(-PTY_TAIL_BUFFER_MAX);
+        lastPtyDataAt = Date.now();
+        if (!readyMarked && text.toLowerCase().includes('permission')) {
             readyMarked = true;
             clearTimeout(readyTimeout);
             writeStatus('ready');
@@ -385,7 +399,8 @@ function spawnClaude(startMode) {
         pty = null;
         try { fs.unlinkSync(pidFile); } catch { /* ignore */ }
         if (readyTimeout) clearTimeout(readyTimeout);
-
+        // Note: do NOT clear ptyTailBuffer here — handleClaudeExit needs it
+        // to detect rate-limit text from the dying claude.exe.
         if (isShuttingDown || isPlannedRestart) return;
         handleClaudeExit(exitCode, signal);
     });
@@ -424,12 +439,107 @@ function handleClaudeExit(code, signal) {
     process.exit(1);
 }
 
+// All screen-scrape detection (rate-limit, modal, reset time) reads from
+// ptyTailBuffer — the in-memory rolling tail kept by pty.onData. No disk
+// I/O. The wrapper is the PTY parent so this buffer is always at least as
+// fresh as anything written to stdout.log, and avoids contention with
+// other processes on the same volume (cortexOS jsonl writes, PM2 logs).
+
 function detectRateLimit() {
+    // Buffer is empty when called before any PTY data arrived (e.g. cold
+    // start before Claude emits anything). In that case there's no rate-limit
+    // signal to act on yet — return false.
+    if (!ptyTailBuffer) return false;
+    return /rate.?limit|429|capacity/i.test(ptyTailBuffer);
+}
+
+// Returns true if Claude Code's rate-limit-options modal is currently visible.
+// Used to defer Telegram inject (so the modal doesn't capture our \r as a
+// menu selection) and to schedule auto-dismiss via Esc.
+function isRateLimitModalUp() {
+    if (!ptyTailBuffer) return false;
+    // Look for both the menu and the limit message — together = modal up.
+    // ANSI codes can split words; match on the un-styled fragments.
+    const hasMenu = /rate-limit-options|Stop and wait/.test(ptyTailBuffer);
+    const hasLimit = /hit your limit|usage limit|session limit/i.test(ptyTailBuffer);
+    return hasMenu && hasLimit;
+}
+
+// Parse "resets 3:30am (America/New_York)" from the modal text.
+// Returns the next reset moment as a Date, or null if not found.
+function parseRateLimitResetTime(text) {
+    const m = text.match(/resets?\s+(\d{1,2}):?(\d{2})?\s*(am|pm)\s*\(([^)]+)\)/i);
+    if (!m) return null;
+    let hour = parseInt(m[1], 10);
+    const minute = m[2] ? parseInt(m[2], 10) : 0;
+    const meridiem = m[3].toLowerCase();
+    const tz = m[4].trim();
+    if (meridiem === 'pm' && hour !== 12) hour += 12;
+    if (meridiem === 'am' && hour === 12) hour = 0;
     try {
-        const data = fs.readFileSync(path.join(logDir, 'stdout.log'), 'utf-8');
-        const tail = data.split(/\r?\n/).slice(-50).join('\n').toLowerCase();
-        return /rate.?limit|429|capacity/.test(tail);
-    } catch { return false; }
+        // Compute "now" in target timezone to figure out today's date there.
+        const now = new Date();
+        const fmt = new Intl.DateTimeFormat('en-CA', {
+            timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit',
+            hour: '2-digit', minute: '2-digit', hour12: false,
+        });
+        const parts = Object.fromEntries(
+            fmt.formatToParts(now).filter(p => p.type !== 'literal').map(p => [p.type, p.value])
+        );
+        // Build the reset moment as if it were "today in tz at HH:MM".
+        // We approximate UTC by computing the offset between `now` and "now in tz".
+        const tzNowMs = Date.UTC(
+            +parts.year, +parts.month - 1, +parts.day,
+            +parts.hour, +parts.minute, 0
+        );
+        const offsetMs = tzNowMs - now.getTime();
+        const resetTzMs = Date.UTC(+parts.year, +parts.month - 1, +parts.day, hour, minute, 0);
+        let resetUtcMs = resetTzMs - offsetMs;
+        // If it's already past today's reset, the next one is tomorrow.
+        if (resetUtcMs < now.getTime()) resetUtcMs += 24 * 60 * 60 * 1000;
+        return new Date(resetUtcMs);
+    } catch {
+        return null;
+    }
+}
+
+// Periodic check: if the rate-limit modal is up AND the reset window has
+// passed, send Esc to dismiss it so Cortex can resume processing the queued
+// Telegram messages waiting in pollTelegram's defer path.
+function checkRateLimitModalDismissal() {
+    if (!pty || isShuttingDown) return;
+    if (!isRateLimitModalUp()) return;
+    const reset = parseRateLimitResetTime(ptyTailBuffer);
+    const now = Date.now();
+    // Two paths to dismissal:
+    //   1) we parsed the reset time and it's in the past (most reliable)
+    //   2) couldn't parse it, but no PTY data has arrived for >30 min — the
+    //      modal is almost certainly stale (Anthropic resets are at most
+    //      hourly so a 30-min silence means we're past the window).
+    let shouldDismiss = false;
+    let reason = '';
+    if (reset && reset.getTime() <= now) {
+        shouldDismiss = true;
+        reason = `reset window passed (${reset.toISOString()})`;
+    } else if (lastPtyDataAt && now - lastPtyDataAt > 30 * 60 * 1000) {
+        shouldDismiss = true;
+        reason = `PTY quiet ${Math.round((now - lastPtyDataAt) / 60000)}min, assuming reset passed`;
+    }
+    if (shouldDismiss) {
+        log(`Auto-dismissing rate-limit modal — ${reason}`);
+        pty.write('\x1b');  // Esc
+    }
+}
+
+const RATE_LIMIT_MODAL_CHECK_MS = 5 * 60 * 1000;  // every 5 minutes
+let rateLimitModalTimer = null;
+function startRateLimitModalWatcher() {
+    if (rateLimitModalTimer) return;
+    rateLimitModalTimer = setInterval(checkRateLimitModalDismissal, RATE_LIMIT_MODAL_CHECK_MS);
+    if (rateLimitModalTimer.unref) rateLimitModalTimer.unref();
+}
+function stopRateLimitModalWatcher() {
+    if (rateLimitModalTimer) { clearInterval(rateLimitModalTimer); rateLimitModalTimer = null; }
 }
 
 function sendTelegramAlert(text) {
@@ -501,7 +611,12 @@ async function processQueue() {
 async function executeCommand(cmd, filename) {
     switch (cmd.type) {
         case 'inject':
-            pty.write(cmd.content + '\r');
+            pty.write(cmd.content);
+            pty.write('\r');
+            if (cmd.content.includes('\n')) {
+                await sleep(250);
+                if (pty) pty.write('\r');
+            }
             log(`Injected message: ${filename}`);
             break;
 
@@ -713,9 +828,28 @@ async function pollTelegram() {
     }
 
     // Inject accumulated messages into PTY
+    // Multi-line content can land in two TUI states: (a) queued behind a busy
+    // Claude (single Enter submits when idle), or (b) multi-line input box on
+    // an idle Claude (first Enter only adds a newline; second Enter from the
+    // resulting blank trailing line submits). Double-tap covers both. Empty
+    // submissions are no-ops in Claude Code, so the second Enter is safe.
+    //
+    // Skip injection entirely if Claude's rate-limit modal is currently up:
+    // pressing \r would select option 1 ("Stop and wait") and silently
+    // consume the user's message. We do NOT advance the Telegram offset, so
+    // the message is redelivered on the next poll cycle once the modal
+    // clears (auto-dismissed by checkRateLimitModalDismissal or by the user).
     if (messageBlock && pty) {
+        if (isRateLimitModalUp()) {
+            log(`Rate-limit modal up; deferring ${messageBlock.length} bytes from Telegram (will redeliver next poll)`);
+            return;  // do not advance offset
+        }
         pty.write(messageBlock);
         pty.write('\r');
+        if (messageBlock.includes('\n')) {
+            await sleep(250);
+            if (pty) pty.write('\r');
+        }
         log(`Injected ${messageBlock.length} bytes from Telegram`);
     }
 
@@ -750,9 +884,21 @@ async function pollInbox() {
         } catch { /* skip malformed */ }
     }
 
+    // Same modal defer logic as pollTelegram — rate-limit modal would otherwise
+    // capture our \r as option-1 ("Stop and wait") and consume the message.
+    // Inbox files are NOT moved to inflight in this branch, so they redeliver
+    // on the next poll cycle once the modal clears.
     if (messageBlock && pty) {
+        if (isRateLimitModalUp()) {
+            log(`Rate-limit modal up; deferring ${messageBlock.length} bytes from inbox (${ackedIds.length} messages, will redeliver next poll)`);
+            return;
+        }
         pty.write(messageBlock);
         pty.write('\r');
+        if (messageBlock.includes('\n')) {
+            await sleep(250);
+            if (pty) pty.write('\r');
+        }
         log(`Injected ${messageBlock.length} bytes from inbox (${ackedIds.length} messages)`);
 
         // Move processed files to inflight
@@ -940,6 +1086,7 @@ function gracefulShutdown(signal) {
 
 function cleanup() {
     stopPolling();
+    stopRateLimitModalWatcher();
     if (queueWatcher) { try { queueWatcher.close(); } catch {} queueWatcher = null; }
     if (queueInterval) { clearInterval(queueInterval); queueInterval = null; }
     if (cleanupInterval) { clearInterval(cleanupInterval); cleanupInterval = null; }
@@ -1009,6 +1156,7 @@ async function main() {
     startSessionTimer();
     startProcessedCleanup();
     startPolling();  // Node.js native Telegram + inbox polling (replaces bash fast-checker)
+    startRateLimitModalWatcher();  // Auto-dismiss rate-limit modal once reset passes
     registerTelegramCommands();
 
     log('All subsystems started');

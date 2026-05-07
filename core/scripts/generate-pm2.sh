@@ -70,12 +70,17 @@ if [[ -n "${BASH_BIN}" ]]; then
     BASH_DIR=$(dirname "${BASH_BIN}")
     PM2_PATH="${BASH_DIR}:${PM2_PATH}"
 fi
-# Also include Git's usr/bin which has most GNU utilities
+# Also include Git's usr/bin which has most GNU utilities, and mingw64/bin
+# (where curl/openssl/wget live in MSYS2 / Git Bash for Windows).
 GIT_BIN=$(which git 2>/dev/null || echo "")
 if [[ -n "${GIT_BIN}" ]]; then
     GIT_USR_BIN="$(dirname "$(dirname "${GIT_BIN}")")/usr/bin"
     [[ -d "${GIT_USR_BIN}" ]] && PM2_PATH="${GIT_USR_BIN}:${PM2_PATH}"
+    GIT_MINGW_BIN="$(dirname "$(dirname "${GIT_BIN}")")/mingw64/bin"
+    [[ -d "${GIT_MINGW_BIN}" ]] && PM2_PATH="${GIT_MINGW_BIN}:${PM2_PATH}"
 fi
+# Always include /c/Windows/System32 — Windows ships its own curl there since 1809.
+[[ -d "/c/Windows/System32" ]] && PM2_PATH="/c/Windows/System32:${PM2_PATH}"
 
 # Include pyenv shims if present
 [[ -d "${HOME}/.pyenv/shims" ]] && PM2_PATH="${HOME}/.pyenv/shims:${PM2_PATH}"
